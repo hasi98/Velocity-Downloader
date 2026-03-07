@@ -1,0 +1,433 @@
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import type { DownloadTask, ProgressEvent, Toast, HttpContext, ShowAddDownloadPayload } from './types';
+import { formatBytes, formatSpeed, formatEta, generateId, getFileIcon, getFileCategory } from './utils';
+import './index.css';
+import './native-ui.css';
+
+type ContextMenuState = { x: number; y: number; id: string } | null;
+
+function App() {
+  const [downloads, setDownloads] = useState<DownloadTask[]>([]);
+  const [category, setCategory] = useState<string>('all');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
+
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [httpContext, setHttpContext] = useState<HttpContext>({});
+
+  const downloadsRef = useRef<DownloadTask[]>([]);
+  useEffect(() => { downloadsRef.current = downloads; }, [downloads]);
+
+  // Close context menu on click outside
+  useEffect(() => {
+    const handler = () => setContextMenu(null);
+    window.addEventListener('click', handler);
+    return () => window.removeEventListener('click', handler);
+  }, []);
+
+  const addToast = useCallback((type: Toast['type'], message: string) => {
+    const id = generateId();
+    setToasts(prev => [...prev, { id, type, message }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+  }, []);
+
+  const openDownloadWindow = useCallback(async (id: string, filename: string) => {
+    const label = `dl-${id.replace(/[^a-zA-Z0-9]/g, '')}-${Date.now()}`;
+    const webview = new WebviewWindow(label, {
+      url: `?window=download&id=${id}`,
+      title: `Downloading - ${filename}`,
+      width: 650,
+      height: 420,
+      minWidth: 500,
+      minHeight: 320,
+      resizable: true,
+      decorations: true,
+      alwaysOnTop: false,
+    });
+    webview.once('tauri://error', (e) => console.error('Download window error:', e));
+  }, []);
+
+  const openSettingsWindow = useCallback(async () => {
+    const webview = new WebviewWindow('settings-window', {
+      url: '?window=settings',
+      title: 'Options',
+      width: 780,
+      height: 640,
+      minWidth: 600,
+      minHeight: 500,
+      resizable: true,
+      decorations: true,
+      center: true,
+    });
+    webview.once('tauri://error', () => {
+      // If window already exists, it will throw an error, so we bring it to front
+      invoke('bring_window_to_front').catch(() => {});
+    });
+  }, []);
+
+  const openAddDownloadWindow = useCallback((payload?: any) => {
+    const id = Date.now().toString();
+    if (payload) {
+      localStorage.setItem(`add-dl-${id}`, JSON.stringify(payload));
+    }
+    const webview = new WebviewWindow(`add-download-${id}`, {
+      url: `?window=add-download&id=${id}`,
+      title: 'Add New Download',
+      width: 600,
+      height: 440,
+      minWidth: 500,
+      minHeight: 380,
+      resizable: true,
+      decorations: true,
+      center: true,
+      alwaysOnTop: false,
+    });
+    webview.once('tauri://error', (e) => console.error('Add window error:', e));
+  }, []);
+
+  const openExtensionWindow = useCallback(() => {
+    const webview = new WebviewWindow('extensions-window', {
+      url: '?window=extensions',
+      title: 'Install Extension',
+      width: 800,
+      height: 750,
+      minWidth: 700,
+      minHeight: 600,
+      resizable: true,
+      decorations: true,
+      center: true,
+      alwaysOnTop: false,
+    });
+    webview.once('tauri://error', (e) => console.error('Ext window error:', e));
+  }, []);
+
+  const openBatchDownloadWindow = useCallback(() => {
+    const webview = new WebviewWindow(`batch-download-${Date.now()}`, {
+      url: '?window=batch-download',
+      title: 'Batch Download',
+      width: 700,
+      height: 600,
+      minWidth: 500,
+      minHeight: 400,
+      resizable: true,
+      decorations: true,
+      center: true,
+      alwaysOnTop: false,
+    });
+    webview.once('tauri://error', (e) => console.error('Batch window error:', e));
+  }, []);
+
+  // Load initial data
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const [allDownloads] = await Promise.all([
+          invoke<DownloadTask[]>('get_all_downloads'),
+        ]);
+        setDownloads(allDownloads);
+
+        const chromeInstalled = await invoke<boolean>('check_extension_installed', { browser: 'chrome' }).catch(() => false);
+        const edgeInstalled = await invoke<boolean>('check_extension_installed', { browser: 'edge' }).catch(() => false);
+        if (!chromeInstalled && !edgeInstalled) openExtensionWindow();
+      } catch (e) {
+        console.error('Failed to initialize:', e);
+      }
+    };
+    init();
+  }, []);
+
+  // Event listeners
+  useEffect(() => {
+    const unlistenProgress = listen<ProgressEvent>('download-progress', (event) => {
+      const p = event.payload;
+      setDownloads(prev => prev.map(d => d.id === p.download_id
+        ? { ...d, downloaded: p.downloaded, speed_bps: p.speed_bps, eta_seconds: p.eta_seconds, status: p.status, segments: p.segments.length > 0 ? p.segments : d.segments }
+        : d
+      ));
+    });
+
+    const unlistenAdded = listen<DownloadTask>('download-added', (event) => {
+      // Use ref for existence check — React 18 batches state updaters asynchronously
+      const alreadyExists = downloadsRef.current.some(d => d.id === event.payload.id);
+      if (!alreadyExists) {
+        setDownloads(prev => prev.some(d => d.id === event.payload.id) ? prev : [event.payload, ...prev]);
+        openDownloadWindow(event.payload.id, event.payload.filename);
+      }
+    });
+
+    const unlistenShowModal = listen<ShowAddDownloadPayload>('show-add-download', (event) => {
+      openAddDownloadWindow({
+        url: event.payload.url,
+        cookies: event.payload.cookies,
+        referer: event.payload.referer,
+        user_agent: event.payload.user_agent
+      });
+    });
+
+    return () => {
+      unlistenProgress.then(f => f());
+      unlistenAdded.then(f => f());
+      unlistenShowModal.then(f => f());
+    };
+  }, [openDownloadWindow]);
+
+  // Handlers
+  const handleAddDownload = async (url: string, savePath?: string, ctx?: HttpContext) => {
+    const context = ctx ?? httpContext;
+    try {
+      await invoke<DownloadTask>('add_download', {
+        url,
+        savePath: savePath || null,
+        cookies: context.cookies ?? null,
+        referer: context.referer ?? null,
+        userAgent: context.user_agent ?? null,
+      });
+      setHttpContext({});
+    } catch (e: any) {
+      addToast('error', typeof e === 'string' ? e : 'Failed to start download');
+    }
+  };
+
+  const handlePause = async (id: string) => {
+    try {
+      await invoke('pause_download', { downloadId: id });
+      setDownloads(prev => prev.map(d => d.id === id ? { ...d, status: 'paused' as const, speed_bps: 0 } : d));
+    } catch {}
+  };
+
+  const handleResume = async (id: string) => {
+    try { await invoke('resume_download', { downloadId: id }); } catch {}
+  };
+
+  const handleRemove = async (id: string) => {
+    try {
+      await invoke('remove_download', { downloadId: id });
+      setDownloads(prev => prev.filter(d => d.id !== id));
+      if (selectedId === id) setSelectedId(null);
+    } catch {}
+  };
+
+  const handleStopAll = async () => {
+    downloads.forEach(d => {
+      if (d.status === 'downloading' || d.status === 'assembling') handlePause(d.id);
+    });
+  };
+
+  const selectedDownload = downloads.find(d => d.id === selectedId);
+
+  const displayedDownloads = downloads.filter(d => {
+    if (category === 'unfinished') return d.status !== 'completed';
+    if (category === 'finished') return d.status === 'completed';
+    if (['Compressed', 'Documents', 'Music', 'Programs', 'Video'].includes(category)) {
+      return getFileCategory(d.filename) === category;
+    }
+    return true;
+  });
+
+  const handleRowContextMenu = (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelectedId(id);
+    setContextMenu({ x: e.clientX, y: e.clientY, id });
+  };
+
+  const ctxDownload = contextMenu ? downloads.find(d => d.id === contextMenu.id) : null;
+
+  return (
+    <div className="native-app">
+      {/* Top Toolbar */}
+      <div className="native-toolbar">
+        <button className="toolbar-btn" onClick={() => { openAddDownloadWindow(); }}>
+          <span className="toolbar-icon">➕</span>
+          <span className="toolbar-text">Add URL</span>
+        </button>
+        <button className="toolbar-btn" onClick={openBatchDownloadWindow}>
+          <span className="toolbar-icon">📚</span>
+          <span className="toolbar-text">Batch</span>
+        </button>
+        <button
+          className="toolbar-btn"
+          disabled={!selectedDownload || selectedDownload.status === 'downloading' || selectedDownload.status === 'completed'}
+          onClick={() => selectedId && handleResume(selectedId)}
+        >
+          <span className="toolbar-icon">▶️</span>
+          <span className="toolbar-text">Resume</span>
+        </button>
+        <button
+          className="toolbar-btn"
+          disabled={!selectedDownload || (selectedDownload.status !== 'downloading' && selectedDownload.status !== 'assembling')}
+          onClick={() => selectedId && handlePause(selectedId)}
+        >
+          <span className="toolbar-icon">⏹️</span>
+          <span className="toolbar-text">Stop</span>
+        </button>
+        <button className="toolbar-btn" onClick={handleStopAll}>
+          <span className="toolbar-icon">⏸️</span>
+          <span className="toolbar-text">Stop All</span>
+        </button>
+        <button
+          className="toolbar-btn"
+          disabled={!selectedId}
+          onClick={() => selectedId && handleRemove(selectedId)}
+        >
+          <span className="toolbar-icon">🗑️</span>
+          <span className="toolbar-text">Delete</span>
+        </button>
+
+        <div className="toolbar-separator" />
+
+        <button className="toolbar-btn" onClick={openSettingsWindow}>
+          <span className="toolbar-icon">⚙️</span>
+          <span className="toolbar-text">Options</span>
+        </button>
+      </div>
+
+      <div className="native-main">
+        {/* Left Sidebar */}
+            <div className="native-sidebar">
+              <div className={`sidebar-item ${category === 'all' ? 'active' : ''}`} onClick={() => setCategory('all')}>
+                <span className="sidebar-icon">📥</span> All Downloads
+              </div>
+              <div className={`sidebar-item sub-item ${category === 'unfinished' ? 'active' : ''}`} onClick={() => setCategory('unfinished')}>
+                <span className="sidebar-icon">◷</span> Unfinished
+              </div>
+              <div className={`sidebar-item sub-item ${category === 'finished' ? 'active' : ''}`} onClick={() => setCategory('finished')}>
+                <span className="sidebar-icon">✓</span> Finished
+              </div>
+              <div className="sidebar-group">Categories</div>
+              <div className={`sidebar-item sub-item ${category === 'Compressed' ? 'active' : ''}`} onClick={() => setCategory('Compressed')}><span className="sidebar-icon">📂</span> Compressed</div>
+              <div className={`sidebar-item sub-item ${category === 'Documents' ? 'active' : ''}`} onClick={() => setCategory('Documents')}><span className="sidebar-icon">📄</span> Documents</div>
+              <div className={`sidebar-item sub-item ${category === 'Music' ? 'active' : ''}`} onClick={() => setCategory('Music')}><span className="sidebar-icon">🎵</span> Music</div>
+              <div className={`sidebar-item sub-item ${category === 'Programs' ? 'active' : ''}`} onClick={() => setCategory('Programs')}><span className="sidebar-icon">⚙️</span> Programs</div>
+              <div className={`sidebar-item sub-item ${category === 'Video' ? 'active' : ''}`} onClick={() => setCategory('Video')}><span className="sidebar-icon">🎬</span> Video</div>
+            </div>
+
+            {/* Right Pane Table */}
+            <div className="native-table-container">
+              <table className="native-table">
+                <thead>
+                  <tr>
+                    <th>File Name</th>
+                    <th>Size</th>
+                    <th>Status</th>
+                    <th>Time Left</th>
+                    <th>Transfer Rate</th>
+                    <th>Added</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayedDownloads.map(d => {
+                    const isActive = d.status === 'downloading' || d.status === 'assembling';
+                    const isCompleted = d.status === 'completed';
+                    let statusLabel = d.status.charAt(0).toUpperCase() + d.status.slice(1);
+                    if (isCompleted) statusLabel = 'Complete';
+
+                    return (
+                      <tr
+                        key={d.id}
+                        className={selectedId === d.id ? 'selected' : ''}
+                        onClick={() => setSelectedId(d.id)}
+                        onDoubleClick={() => openDownloadWindow(d.id, d.filename)}
+                        onContextMenu={e => handleRowContextMenu(e, d.id)}
+                      >
+                        <td className="cell-filename">
+                          <span className="file-icon" style={{ opacity: isCompleted ? 1 : 0.7 }}>{getFileIcon(d.filename)}</span>
+                          {d.filename}
+                        </td>
+                        <td>{formatBytes(d.total_size || d.downloaded)}</td>
+                        <td>{statusLabel}</td>
+                        <td>{isActive ? formatEta(d.eta_seconds) : ''}</td>
+                        <td>{isActive && d.speed_bps > 0 ? formatSpeed(d.speed_bps) : ''}</td>
+                        <td>{new Date().toLocaleDateString()}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {displayedDownloads.length === 0 && (
+                <div className="empty-table-msg">There are no downloads to display.</div>
+              )}
+            </div>
+      </div>
+
+      {/* Right-click Context Menu */}
+      {contextMenu && ctxDownload && (
+        <div
+          className="ctx-menu"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onClick={e => e.stopPropagation()}
+        >
+          <div className="ctx-menu-header">{ctxDownload.filename.length > 30 ? ctxDownload.filename.slice(0, 30) + '…' : ctxDownload.filename}</div>
+          <div className="ctx-divider" />
+          <button 
+            className="ctx-item" 
+            disabled={ctxDownload.status !== 'completed'}
+            style={ctxDownload.status !== 'completed' ? { opacity: 0.5, cursor: 'not-allowed' } : {}}
+            onClick={() => { if (ctxDownload.status === 'completed') invoke('open_file', { path: ctxDownload.save_path }).catch(console.error); setContextMenu(null); }}
+          >
+            📄 Open File
+          </button>
+          <button 
+            className="ctx-item" 
+            onClick={() => { invoke('open_folder', { path: ctxDownload.save_path }).catch(console.error); setContextMenu(null); }}
+          >
+            📂 Open File Location
+          </button>
+          <div className="ctx-divider" />
+          <button className="ctx-item" onClick={() => { openDownloadWindow(contextMenu.id, ctxDownload.filename); setContextMenu(null); }}>
+            📊 Open Progress Window
+          </button>
+          {(ctxDownload.status === 'paused' || ctxDownload.status === 'failed') && (
+            <button className="ctx-item" onClick={() => { handleResume(contextMenu.id); setContextMenu(null); }}>
+              ▶ Resume Download
+            </button>
+          )}
+          {(ctxDownload.status === 'downloading' || ctxDownload.status === 'assembling') && (
+            <>
+              <button className="ctx-item" onClick={() => { handlePause(contextMenu.id); setContextMenu(null); }}>
+                ⏸ Pause
+              </button>
+              <button className="ctx-item" onClick={() => { handlePause(contextMenu.id); setContextMenu(null); }}>
+                ⏹ Stop
+              </button>
+            </>
+          )}
+          <button className="ctx-item" onClick={() => { 
+            const dirOnly = ctxDownload.save_path.substring(0, Math.max(ctxDownload.save_path.lastIndexOf('\\'), ctxDownload.save_path.lastIndexOf('/')));
+            handleAddDownload(ctxDownload.url, dirOnly, ctxDownload.http_context); 
+            setContextMenu(null); 
+          }}>
+            🔄 Redownload
+          </button>
+          <div className="ctx-divider" />
+          <button className="ctx-item" onClick={() => { navigator.clipboard.writeText(ctxDownload.url).catch(() => {}); setContextMenu(null); }}>
+            📋 Copy URL
+          </button>
+          <button className="ctx-item" onClick={() => { navigator.clipboard.writeText(ctxDownload.save_path).catch(() => {}); setContextMenu(null); }}>
+            📁 Copy Save Path
+          </button>
+          <div className="ctx-divider" />
+          <button className="ctx-item ctx-danger" onClick={() => { handleRemove(contextMenu.id); setContextMenu(null); }}>
+            🗑 Delete
+          </button>
+        </div>
+      )}
+
+
+      {toasts.length > 0 && (
+        <div className="toast-container">
+          {toasts.map(toast => (
+            <div key={toast.id} className={`toast ${toast.type}`}>
+              {toast.message}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default App;
