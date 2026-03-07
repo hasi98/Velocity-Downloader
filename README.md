@@ -2,7 +2,7 @@
 
 A high-performance, modern download manager built with **Tauri**, **React**, and **Rust**. Velocity Downloader provides a seamless downloading experience with multi-threaded support and deep browser integration via a dedicated Chrome extension.
 
-![My IDM Banner](https://raw.githubusercontent.com/your-username/velocity-downloader/main/public/banner.png) *(Note: Add a real banner later)*
+Download Windows Installer: https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.1.0
 
 ## ✨ Features
 
@@ -20,6 +20,8 @@ A high-performance, modern download manager built with **Tauri**, **React**, and
 - **Extension**: Manifest V3 (Javascript)
 
 ## 🚀 Getting Started
+
+Download Windows Installer: https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.1.0
 
 ### Prerequisites
 
