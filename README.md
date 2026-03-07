@@ -2,7 +2,7 @@
 
 A high-performance, modern download manager built with **Tauri**, **React**, and **Rust**. Velocity Downloader provides a seamless downloading experience with multi-threaded support and deep browser integration via a dedicated Chrome extension.
 
-Download Windows Installer: https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.1.0
+Download Windows Installer: [https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.1.0](https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.1.1)
 
 ## ✨ Features
 
@@ -21,7 +21,7 @@ Download Windows Installer: https://github.com/hasi98/Velocity-Downloader/releas
 
 ## 🚀 Getting Started
 
-Download Windows Installer: https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.1.0
+Download Windows Installer: [https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.1.0](https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.1.1)
 
 ### Prerequisites
 
