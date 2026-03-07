@@ -70,4 +70,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ---
 
-Built with ❤️ by [Your Name]
+Built with ❤️ by Hasith Lakshan
