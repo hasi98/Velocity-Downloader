@@ -74,4 +74,41 @@ impl StateManager {
 
         Ok(tasks)
     }
+
+    fn settings_path() -> Option<std::path::PathBuf> {
+        dirs::config_dir().map(|d| d.join("VelocityDownloader").join("settings.json"))
+    }
+
+    /// Save app settings to disk
+    pub fn save_settings(settings: &crate::models::AppSettings) -> Result<(), String> {
+        let path = Self::settings_path().ok_or("Failed to determine settings path")?;
+        
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+
+        let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+        std::fs::write(path, json).map_err(|e| e.to_string())?;
+        
+        Ok(())
+    }
+
+    /// Load app settings from disk
+    pub fn load_settings() -> crate::models::AppSettings {
+        let path = match Self::settings_path() {
+            Some(p) => p,
+            None => return crate::models::AppSettings::default(),
+        };
+
+        if !path.exists() {
+            return crate::models::AppSettings::default();
+        }
+
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return crate::models::AppSettings::default(),
+        };
+
+        serde_json::from_str(&content).unwrap_or_else(|_| crate::models::AppSettings::default())
+    }
 }

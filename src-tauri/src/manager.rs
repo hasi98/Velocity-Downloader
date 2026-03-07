@@ -23,7 +23,7 @@ impl DownloadManager {
             engine: Arc::new(DownloadEngine::new()),
             tasks: Arc::new(RwLock::new(HashMap::new())),
             cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
-            settings: Arc::new(RwLock::new(AppSettings::default())),
+            settings: Arc::new(RwLock::new(StateManager::load_settings())),
             active_count: Arc::new(Mutex::new(0)),
             speed_limits: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -714,7 +714,8 @@ impl DownloadManager {
     /// Update settings
     pub async fn update_settings(&self, new_settings: AppSettings) {
         let mut settings = self.settings.write().await;
-        *settings = new_settings;
+        *settings = new_settings.clone();
+        let _ = StateManager::save_settings(&new_settings);
     }
 
     /// Get current settings
