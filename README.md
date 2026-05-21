@@ -2,7 +2,7 @@
 
 Velocity Downloader is a Windows-focused download manager built with Tauri, Rust, React, and TypeScript. It is designed for fast segmented downloads, browser capture, persistent download history, and an IDM-style native desktop workflow.
 
-Download Windows Installer: https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.1.1
+Download Windows Installer: [https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.1.1](https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.2.0)
 
 ## Features
 
