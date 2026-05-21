@@ -1,73 +1,135 @@
-# 🚀 Velocity Downloader
+# Velocity Downloader
 
-A high-performance, modern download manager built with **Tauri**, **React**, and **Rust**. Velocity Downloader provides a seamless downloading experience with multi-threaded support and deep browser integration via a dedicated Chrome extension.
+Velocity Downloader is a Windows-focused download manager built with Tauri, Rust, React, and TypeScript. It is designed for fast segmented downloads, browser capture, persistent download history, and an IDM-style native desktop workflow.
 
-Download Windows Installer: [https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.1.0](https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.1.1)
+Download Windows Installer: https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.1.1
 
-## ✨ Features
+## Features
 
-- **Blazing Fast Downloads**: Multi-threaded downloading for maximum speed.
-- **Browser Integration**: Automatic download interception via the Chrome Extension.
-- **Native Performance**: Built with Rust for efficiency and low memory footprint.
-- **Modern UI**: Sleek, dark-themed interface built with React and Tailwind CSS.
-- **Queue Management**: Pause, resume, and prioritize your downloads.
-- **Easy Installation**: Single executable for Windows, macOS, and Linux.
+- Multi-segment downloads with pause, resume, stop, and retry-ready task state.
+- IDM-style Add Download window with automatic URL analysis.
+- Hidden pre-download/prefetch after analysis, with final save only after user confirmation.
+- Compact download progress window by default, with More/Less segment details.
+- Per-download speed limit controls and global speed limit support for new downloads.
+- Persistent download history after app restart.
+- Resume support after restart using `.meta` files and verified temp segments.
+- Automatic duplicate filename handling such as `file (1).zip`.
+- File rename before starting a download.
+- Download categories by file type.
+- Batch download window with pasted URLs, imported URL lists, extension filtering, and queue modes.
+- Browser extension integration for Chrome, Edge, Brave, Opera, and Vivaldi-style Chromium browsers.
+- Browser download interception with cookies, referer, and user-agent forwarding.
+- "Download with Velocity" right-click browser menu.
+- Browser fallback if Velocity cannot accept an intercepted download.
+- Tray icon support with hide-on-close behavior.
+- Optional "Start with Windows" setting.
+- Native child-window placement so Add Download, Settings, Batch, Extension, and progress windows open over the main app.
+- Updated app, taskbar, titlebar, tray, installer, and web favicon icons.
 
-## 🛠️ Tech Stack
+## Tech Stack
 
-- **Frontend**: React, TypeScript, Vite, CSS (Vanilla/Modules)
-- **Backend/Core**: Tauri (Rust)
-- **Extension**: Manifest V3 (Javascript)
+- Frontend: React, TypeScript, Vite, CSS
+- Desktop shell: Tauri 2
+- Core downloader: Rust
+- Browser extension: Manifest V3 JavaScript
+- Local app bridge: HTTP server on `127.0.0.1:41420`
 
-## 🚀 Getting Started
+## Requirements
 
-Download Windows Installer: [https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.1.0](https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.1.1)
+- Windows 10/11
+- WebView2 Runtime
+- Node.js LTS
+- Rust stable toolchain
+- Visual Studio Build Tools with the Windows MSVC toolchain
 
-### Prerequisites
+## Development
 
-- [Node.js](https://nodejs.org/) (Latest LTS)
-- [Rust](https://www.rust-lang.org/tools/install)
-- [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (For Windows users)
+Clone the repository:
 
-### Installation for Developers
+```bash
+git clone https://github.com/hasi98/Velocity-Downloader.git
+cd Velocity-Downloader/velocity-downloader
+```
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/your-username/velocity-downloader.git
-   cd velocity-downloader
-   ```
+Install dependencies:
 
-2. **Install dependencies:**
-   ```bash
-   npm install
-   ```
+```bash
+npm install
+```
 
-3. **Run the app in development mode:**
-   ```bash
-   npm run tauri dev
-   ```
+Run the app in development mode:
 
-### Installing the Browser Extension
+```bash
+npm run tauri dev
+```
 
-1. Open Chrome and go to `chrome://extensions/`.
-2. Enable **Developer mode** (top right).
-3. Click **Load unpacked**.
-4. Select the `extension` folder from this project directory.
+Build the frontend only:
 
-## 📦 Building for Production
+```bash
+npm run build
+```
 
-To create a standalone installer (EXE for Windows):
+Check the Rust backend:
+
+```bash
+cd src-tauri
+cargo check
+```
+
+## Production Build
+
+Create the Windows executable and installers:
 
 ```bash
 npm run tauri build
 ```
 
-The installer will be generated in `src-tauri/target/release/bundle/`.
+Build outputs are generated here:
 
-## 🤝 Contributing
+- Standalone executable: `src-tauri/target/release/velocity-downloader.exe`
+- NSIS installer: `src-tauri/target/release/bundle/nsis/`
+- MSI installer: `src-tauri/target/release/bundle/msi/`
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+## Browser Extension
 
----
+The extension files are in the `extension` directory.
 
-Built with ❤️ by Hasith Lakshan
+Manual installation:
+
+1. Open your Chromium browser extension page, for example `chrome://extensions`, `edge://extensions`, or `brave://extensions`.
+2. Enable Developer mode.
+3. Click Load unpacked.
+4. Select the `extension` folder from this project.
+5. Keep Velocity Downloader running so the extension can reach `http://127.0.0.1:41420`.
+
+The extension can intercept normal browser downloads and can also send links through the "Download with Velocity" context menu.
+
+## App Behavior
+
+- Closing the main window hides the app to the tray instead of quitting.
+- Use the tray menu to show Velocity Downloader again or quit completely.
+- When Start with Windows is enabled in Settings, the app starts minimized in the background.
+- Incomplete downloads are restored from `.meta` files on startup when possible.
+- Completed downloads remain visible in history after restarting the app.
+
+## Project Structure
+
+```text
+velocity-downloader/
+  extension/              Browser extension
+  logo/                   Source logo assets
+  public/                 Frontend public assets
+  src/                    React/TypeScript frontend
+  src-tauri/              Rust/Tauri backend
+  src-tauri/icons/        Generated app icons
+```
+
+## Notes
+
+- Some protected streaming or blob-based media URLs may not be directly downloadable yet.
+- Some sites require valid cookies, referer, and user-agent headers; the extension forwards these when possible.
+- If Windows shows an old taskbar icon after updating, unpin the old app and pin the rebuilt executable again because Windows caches pinned icons.
+
+## License
+
+This project is licensed under the MIT License. See `LICENSE` for details.

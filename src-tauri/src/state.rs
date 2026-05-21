@@ -75,8 +75,107 @@ impl StateManager {
         Ok(tasks)
     }
 
+    /// Synchronously scan a directory tree for .meta files during app startup.
+    pub fn scan_for_resumable_sync(directory: &str) -> Vec<DownloadTask> {
+        let mut tasks = Vec::new();
+        let root = std::path::PathBuf::from(directory);
+        Self::scan_meta_dir_sync(&root, &mut tasks, 0);
+        tasks
+    }
+
+    fn scan_meta_dir_sync(dir: &Path, tasks: &mut Vec<DownloadTask>, depth: usize) {
+        if depth > 5 || !dir.exists() {
+            return;
+        }
+
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => return,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                Self::scan_meta_dir_sync(&path, tasks, depth + 1);
+                continue;
+            }
+
+            if path.extension().and_then(|e| e.to_str()) != Some("meta") {
+                continue;
+            }
+
+            let content = match std::fs::read_to_string(&path) {
+                Ok(content) => content,
+                Err(_) => continue,
+            };
+
+            if let Ok(task) = serde_json::from_str::<DownloadTask>(&content) {
+                tasks.push(task);
+            }
+        }
+    }
+
     fn settings_path() -> Option<std::path::PathBuf> {
         dirs::config_dir().map(|d| d.join("VelocityDownloader").join("settings.json"))
+    }
+
+    fn history_path() -> Option<std::path::PathBuf> {
+        dirs::config_dir().map(|d| d.join("VelocityDownloader").join("history.json"))
+    }
+
+    /// Load completed download history from disk.
+    pub fn load_history() -> Vec<DownloadTask> {
+        let path = match Self::history_path() {
+            Some(path) => path,
+            None => return Vec::new(),
+        };
+
+        if !path.exists() {
+            return Vec::new();
+        }
+
+        let content = match std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(_) => return Vec::new(),
+        };
+
+        serde_json::from_str(&content).unwrap_or_default()
+    }
+
+    /// Insert or replace a task in completed download history.
+    pub fn upsert_history(task: &DownloadTask) -> Result<(), String> {
+        let path = Self::history_path().ok_or("Failed to determine history path")?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+
+        let mut history = Self::load_history();
+        history.retain(|item| item.id != task.id);
+        history.insert(0, task.clone());
+        history.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        history.truncate(1000);
+
+        let json = serde_json::to_string_pretty(&history).map_err(|e| e.to_string())?;
+        std::fs::write(path, json).map_err(|e| e.to_string())
+    }
+
+    /// Remove a task from completed download history.
+    pub fn remove_history(download_id: &str) -> Result<(), String> {
+        let path = Self::history_path().ok_or("Failed to determine history path")?;
+        let mut history = Self::load_history();
+        let original_len = history.len();
+        history.retain(|item| item.id != download_id);
+
+        if history.len() == original_len {
+            return Ok(());
+        }
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+
+        let json = serde_json::to_string_pretty(&history).map_err(|e| e.to_string())?;
+        std::fs::write(path, json).map_err(|e| e.to_string())
     }
 
     /// Save app settings to disk

@@ -2,6 +2,7 @@ use crate::manager::DownloadManager;
 use crate::models::*;
 use std::sync::Arc;
 use tauri::{AppHandle, State};
+use tauri_plugin_autostart::ManagerExt;
 use tokio::sync::RwLock;
 
 pub type ManagerState = Arc<RwLock<DownloadManager>>;
@@ -33,6 +34,7 @@ pub async fn probe_url(
 pub async fn add_download(
     url: String,
     save_path: Option<String>,
+    filename: Option<String>,
     cookies: Option<String>,
     referer: Option<String>,
     user_agent: Option<String>,
@@ -41,7 +43,35 @@ pub async fn add_download(
 ) -> Result<DownloadTask, String> {
     let ctx = HttpContext { cookies, referer, user_agent };
     let mgr = manager.read().await;
-    mgr.add_download(url, save_path, ctx, app_handle).await
+    mgr.add_download(url, save_path, filename, ctx, app_handle).await
+}
+
+/// Start a hidden download from the add-download dialog.
+#[tauri::command]
+pub async fn prefetch_download(
+    url: String,
+    save_path: Option<String>,
+    filename: Option<String>,
+    cookies: Option<String>,
+    referer: Option<String>,
+    user_agent: Option<String>,
+    app_handle: AppHandle,
+    manager: State<'_, ManagerState>,
+) -> Result<DownloadTask, String> {
+    let ctx = HttpContext { cookies, referer, user_agent };
+    let mgr = manager.read().await;
+    mgr.prefetch_download(url, save_path, filename, ctx, app_handle).await
+}
+
+/// Reveal a hidden prefetch in the main UI.
+#[tauri::command]
+pub async fn reveal_download(
+    download_id: String,
+    app_handle: AppHandle,
+    manager: State<'_, ManagerState>,
+) -> Result<DownloadTask, String> {
+    let mgr = manager.read().await;
+    mgr.reveal_download(&download_id, app_handle).await
 }
 
 /// Pause a download
@@ -98,8 +128,20 @@ pub async fn get_download(
 #[tauri::command]
 pub async fn update_settings(
     settings: AppSettings,
+    app_handle: AppHandle,
     manager: State<'_, ManagerState>,
 ) -> Result<(), String> {
+    let autostart = app_handle.autolaunch();
+    let autostart_result = if settings.start_on_boot {
+        autostart.enable()
+    } else {
+        autostart.disable()
+    };
+
+    if let Err(e) = autostart_result {
+        return Err(format!("Failed to update startup setting: {}", e));
+    }
+
     let mgr = manager.read().await;
     mgr.update_settings(settings).await;
     Ok(())

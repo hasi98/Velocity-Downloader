@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import type { AppSettings } from '../types';
 import { open } from '@tauri-apps/plugin-dialog';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { openChildWindow } from '../windowPlacement';
 import '../native-ui.css';
 
 export function SettingsPanel() {
@@ -101,6 +101,21 @@ export function SettingsPanel() {
                         <span className="ns-suffix-label">KB/s</span>
                     </div>
                 </div>
+
+                <div className="ns-row">
+                    <div className="ns-row-info">
+                        <span className="ns-row-label">Start with Windows</span>
+                        <span className="ns-row-desc">Launch Velocity Downloader in the background when you sign in</span>
+                    </div>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#ccc', fontSize: '13px' }}>
+                        <input
+                            type="checkbox"
+                            checked={local.start_on_boot}
+                            onChange={e => updateSetting({ start_on_boot: e.target.checked })}
+                        />
+                        Enabled
+                    </label>
+                </div>
             </div>
 
             {/* Storage */}
@@ -183,7 +198,7 @@ export function SettingsPanel() {
                     <button
                         className="dw-btn dw-btn-secondary"
                         onClick={() => {
-                            const webview = new WebviewWindow('extensions-window', {
+                            openChildWindow('extensions-window', {
                                 url: '?window=extensions',
                                 title: 'Install Extension',
                                 width: 800,
@@ -192,13 +207,8 @@ export function SettingsPanel() {
                                 minHeight: 600,
                                 resizable: true,
                                 decorations: true,
-                                center: true,
                                 alwaysOnTop: false,
-                            });
-                            webview.once('tauri://error', () => {
-                                // Bring to front if already open
-                                invoke('bring_window_to_front').catch(() => {});
-                            });
+                            }, (e) => console.error('Ext window error:', e));
                         }}
                     >
                         🧩 Manage Extension

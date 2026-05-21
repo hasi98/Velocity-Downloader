@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ChangeEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import type { ProgressEvent } from '../types';
+import type { AppSettings, ProgressEvent } from '../types';
 import '../native-ui.css';
 
 interface QueueItem {
@@ -21,15 +21,18 @@ export function BatchDownloadWindow() {
     const [queue, setQueue] = useState<QueueItem[]>([]);
     const [isStarted, setIsStarted] = useState(false);
     const [error, setError] = useState('');
+    const [extensionFilter, setExtensionFilter] = useState('');
 
     const [currentIdx, setCurrentIdx] = useState(-1);
     const queueRef = useRef<QueueItem[]>([]);
     const activeListener = useRef<UnlistenFn | null>(null);
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
 
     useEffect(() => {
         const init = async () => {
             try {
-                const dir = await invoke<string>('get_default_download_dir');
+                const settings = await invoke<AppSettings>('get_settings');
+                const dir = settings.default_download_dir;
                 setSavePath(dir);
             } catch (e) {
                 console.error(e);
@@ -52,12 +55,44 @@ export function BatchDownloadWindow() {
         } catch { }
     };
 
+    const parseUrls = () => {
+        const allowedExtensions = extensionFilter
+            .split(',')
+            .map(ext => ext.trim().replace(/^\./, '').toLowerCase())
+            .filter(Boolean);
+
+        return urlsInput.split('\n')
+            .map(u => u.trim())
+            .filter(u => u.length > 0 && (u.startsWith('http') || u.startsWith('ftp')))
+            .filter(u => {
+                if (allowedExtensions.length === 0) return true;
+                try {
+                    const path = new URL(u).pathname;
+                    const ext = path.split('.').pop()?.toLowerCase() || '';
+                    return allowedExtensions.includes(ext);
+                } catch {
+                    return false;
+                }
+            });
+    };
+
+    const handleImportFile = (event: ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = () => {
+            const text = String(reader.result || '');
+            setUrlsInput(prev => prev.trim() ? `${prev.trim()}\n${text}` : text);
+        };
+        reader.readAsText(file);
+        event.target.value = '';
+    };
+
     const startBatch = async () => {
         if (!urlsInput.trim()) return;
 
-        const urls = urlsInput.split('\n')
-            .map(u => u.trim())
-            .filter(u => u.length > 0 && (u.startsWith('http') || u.startsWith('ftp')));
+        const urls = parseUrls();
 
         if (urls.length === 0) {
             setError('No valid URLs found.');
@@ -180,6 +215,24 @@ export function BatchDownloadWindow() {
                             onChange={e => setUrlsInput(e.target.value)}
                             autoFocus
                         />
+                        <div className="nd-row">
+                            <button className="dw-btn dw-btn-secondary" onClick={() => fileInputRef.current?.click()}>
+                                Import List
+                            </button>
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept=".txt,.csv,text/plain"
+                                style={{ display: 'none' }}
+                                onChange={handleImportFile}
+                            />
+                            <input
+                                className="nd-input"
+                                value={extensionFilter}
+                                onChange={e => setExtensionFilter(e.target.value)}
+                                placeholder="Filter extensions: zip,mp4,exe"
+                            />
+                        </div>
                     </div>
 
                     <div className="nd-field">

@@ -2,7 +2,7 @@ use crate::engine::DownloadEngine;
 use crate::models::*;
 use crate::state::StateManager;
 use chrono::Utc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{Mutex, RwLock};
@@ -15,17 +15,177 @@ pub struct DownloadManager {
     settings: Arc<RwLock<AppSettings>>,
     active_count: Arc<Mutex<usize>>,
     speed_limits: Arc<RwLock<HashMap<String, Arc<RwLock<Option<u64>>>>>>,
+    hidden_tasks: Arc<RwLock<HashSet<String>>>,
 }
 
 impl DownloadManager {
     pub fn new() -> Self {
+        let settings = StateManager::load_settings();
+        let restored_tasks = Self::load_restored_tasks(&settings);
+
         Self {
             engine: Arc::new(DownloadEngine::new()),
-            tasks: Arc::new(RwLock::new(HashMap::new())),
+            tasks: Arc::new(RwLock::new(restored_tasks)),
             cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
-            settings: Arc::new(RwLock::new(StateManager::load_settings())),
+            settings: Arc::new(RwLock::new(settings)),
             active_count: Arc::new(Mutex::new(0)),
             speed_limits: Arc::new(RwLock::new(HashMap::new())),
+            hidden_tasks: Arc::new(RwLock::new(HashSet::new())),
+        }
+    }
+
+    fn load_restored_tasks(settings: &AppSettings) -> HashMap<String, Arc<RwLock<DownloadTask>>> {
+        let mut restored = HashMap::new();
+        let mut seen = HashSet::new();
+
+        for mut task in StateManager::load_history() {
+            if !seen.insert(task.id.clone()) {
+                continue;
+            }
+            task.status = DownloadStatus::Completed;
+            task.speed_bps = 0.0;
+            task.eta_seconds = 0.0;
+            for segment in &mut task.segments {
+                segment.speed_bps = 0.0;
+                segment.status = SegmentStatus::Completed;
+            }
+            restored.insert(task.id.clone(), Arc::new(RwLock::new(task)));
+        }
+
+        let mut roots = vec![settings.default_download_dir.clone()];
+        if let Some(temp_dir) = &settings.temp_download_dir {
+            roots.push(temp_dir.clone());
+        }
+
+        for root in roots {
+            for mut task in StateManager::scan_for_resumable_sync(&root) {
+                if task.status == DownloadStatus::Completed {
+                    continue;
+                }
+                seen.insert(task.id.clone());
+                Self::verify_restored_segments(&mut task);
+                restored.insert(task.id.clone(), Arc::new(RwLock::new(task)));
+            }
+        }
+
+        restored
+    }
+
+    fn verify_restored_segments(task: &mut DownloadTask) {
+        task.speed_bps = 0.0;
+        task.eta_seconds = 0.0;
+
+        if matches!(task.status, DownloadStatus::Downloading | DownloadStatus::Assembling | DownloadStatus::Queued) {
+            task.status = DownloadStatus::Paused;
+        }
+
+        if task.supports_range && !task.segments.is_empty() {
+            let mut total_downloaded = 0;
+            for segment in &mut task.segments {
+                let actual = std::fs::metadata(&segment.temp_file)
+                    .map(|m| m.len().min(segment.total_size()))
+                    .unwrap_or(0);
+                segment.downloaded = actual;
+                segment.speed_bps = 0.0;
+                segment.status = if actual >= segment.total_size() {
+                    SegmentStatus::Completed
+                } else if actual > 0 {
+                    SegmentStatus::Paused
+                } else {
+                    SegmentStatus::Pending
+                };
+                total_downloaded += actual;
+            }
+            task.downloaded = total_downloaded;
+        }
+
+        task.updated_at = Utc::now();
+    }
+
+    fn category_for_filename(filename: &str) -> &'static str {
+        let ext = std::path::Path::new(filename)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        match ext.as_str() {
+            "mp4" | "mkv" | "avi" | "mov" | "wmv" | "flv" | "webm" | "ts" | "m3u8" => "Video",
+            "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" => "Music",
+            "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "iso" => "Compressed",
+            "exe" | "msi" | "apk" | "dmg" | "pkg" | "deb" | "rpm" | "appimage" => "Programs",
+            "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "csv" => "Documents",
+            _ => "General",
+        }
+    }
+
+    fn sanitize_filename(filename: &str) -> String {
+        let name = std::path::Path::new(filename)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("download");
+        let sanitized: String = name
+            .chars()
+            .map(|c| match c {
+                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+                c if c.is_control() => '_',
+                c => c,
+            })
+            .collect();
+        let trimmed = sanitized.trim().trim_matches('.').to_string();
+        if trimmed.is_empty() {
+            "download".to_string()
+        } else {
+            trimmed
+        }
+    }
+
+    fn unique_save_path(save_dir: &str, filename: &str) -> std::path::PathBuf {
+        let dir = std::path::PathBuf::from(save_dir);
+        let candidate = dir.join(filename);
+        let meta_candidate = dir.join(format!(".{}.meta", filename));
+        if !candidate.exists() && !meta_candidate.exists() {
+            return candidate;
+        }
+
+        let path = std::path::Path::new(filename);
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("download");
+        let ext = path.extension().and_then(|e| e.to_str());
+
+        for index in 1..10_000 {
+            let next_name = match ext {
+                Some(ext) if !ext.is_empty() => format!("{} ({}).{}", stem, index, ext),
+                _ => format!("{} ({})", stem, index),
+            };
+            let next_path = dir.join(&next_name);
+            let next_meta = dir.join(format!(".{}.meta", next_name));
+            if !next_path.exists() && !next_meta.exists() {
+                return next_path;
+            }
+        }
+
+        dir.join(format!("{}-{}", uuid::Uuid::new_v4(), filename))
+    }
+
+    fn friendly_error(error: &str) -> String {
+        let lower = error.to_lowercase();
+        if lower.contains("got html page instead of file") || lower.contains("text/html") {
+            "The server returned a web page instead of the file. The link may require a fresh login, cookies, or a refreshed URL.".to_string()
+        } else if lower.contains("returned 200 instead of 206") || lower.contains("does not support range") {
+            "This server does not support multi-part resume downloads. Try again as a single connection or refresh the link.".to_string()
+        } else if lower.contains("no space") || lower.contains("disk full") {
+            "Not enough disk space for this download.".to_string()
+        } else if lower.contains("permission denied") || lower.contains("access is denied") {
+            "Velocity cannot write to the selected folder. Choose another save location or check folder permissions.".to_string()
+        } else if lower.contains("timed out") || lower.contains("timeout") || lower.contains("stalled") {
+            "The connection stalled or timed out. Use Retry to continue from the saved progress.".to_string()
+        } else if lower.contains("too many redirects") {
+            "The link redirected too many times. The URL may be expired or protected.".to_string()
+        } else {
+            error.to_string()
         }
     }
 
@@ -34,43 +194,63 @@ impl DownloadManager {
         &self,
         url: String,
         save_path: Option<String>,
+        filename_override: Option<String>,
         ctx: HttpContext,
         app_handle: AppHandle,
+    ) -> Result<DownloadTask, String> {
+        self.add_download_internal(url, save_path, filename_override, ctx, app_handle, true).await
+    }
+
+    /// Add a download that starts immediately but stays hidden until explicitly revealed.
+    pub async fn prefetch_download(
+        &self,
+        url: String,
+        save_path: Option<String>,
+        filename_override: Option<String>,
+        ctx: HttpContext,
+        app_handle: AppHandle,
+    ) -> Result<DownloadTask, String> {
+        self.add_download_internal(url, save_path, filename_override, ctx, app_handle, false).await
+    }
+
+    async fn add_download_internal(
+        &self,
+        url: String,
+        save_path: Option<String>,
+        filename_override: Option<String>,
+        ctx: HttpContext,
+        app_handle: AppHandle,
+        visible: bool,
     ) -> Result<DownloadTask, String> {
         // Probe the URL with the browser context so auth cookies are applied
         let (total_size, supports_range, content_type, filename) =
             self.engine.probe_url(&url, &ctx).await?;
+        let filename = filename_override
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or(filename);
+        let filename = Self::sanitize_filename(&filename);
 
         let settings = self.settings.read().await;
         let save_dir = save_path.unwrap_or_else(|| {
             let base = settings.default_download_dir.clone();
-            let ext = std::path::Path::new(&filename)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            
-            let category = match ext.as_str() {
-                "mp4" | "mkv" | "avi" | "mov" | "wmv" | "flv" | "webm" | "ts" | "m3u8" => "Video",
-                "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" => "Music",
-                "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "iso" => "Compressed",
-                "exe" | "msi" | "apk" | "dmg" | "pkg" | "deb" | "rpm" | "appimage" => "Programs",
-                "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "csv" => "Documents",
-                _ => "General",
-            };
+            let category = Self::category_for_filename(&filename);
             
             let path = std::path::PathBuf::from(base).join(category);
             let _ = std::fs::create_dir_all(&path); // Ensure directory exists
             path.to_string_lossy().to_string()
         });
         let temp_dir_override = settings.temp_download_dir.clone();
+        let global_speed_limit = settings.speed_limit_bps;
         drop(settings);
 
         // Use proper OS path joining
-        let full_path = std::path::PathBuf::from(&save_dir)
-            .join(&filename)
-            .to_string_lossy()
+        let full_path_buf = Self::unique_save_path(&save_dir, &filename);
+        let filename = full_path_buf
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&filename)
             .to_string();
+        let full_path = full_path_buf.to_string_lossy().to_string();
 
         let mut task = DownloadTask::new(url, filename, full_path);
         task.total_size = total_size;
@@ -78,6 +258,7 @@ impl DownloadManager {
         task.content_type = content_type;
         task.http_context = ctx;
         task.temp_dir_override = temp_dir_override;
+        task.speed_limit_bps = global_speed_limit;
 
         if supports_range && total_size > 0 {
             let settings = self.settings.read().await;
@@ -114,13 +295,66 @@ impl DownloadManager {
             tasks.insert(task.id.clone(), task_arc);
         }
 
-        // Emit task added event
-        let _ = app_handle.emit("download-added", &task);
+        if visible {
+            // Emit task added event
+            let _ = app_handle.emit("download-added", &task);
+        } else {
+            let mut hidden = self.hidden_tasks.write().await;
+            hidden.insert(task.id.clone());
+        }
 
         // Try to start the download immediately
         self.try_start_download(&task.id, app_handle).await?;
 
         Ok(task)
+    }
+
+    /// Reveal a hidden prefetch so it appears in the UI with its current progress.
+    pub async fn reveal_download(
+        &self,
+        download_id: &str,
+        app_handle: AppHandle,
+    ) -> Result<DownloadTask, String> {
+        let task = {
+            let tasks = self.tasks.read().await;
+            tasks
+                .get(download_id)
+                .cloned()
+                .ok_or("Download not found")?
+        };
+
+        {
+            let mut hidden = self.hidden_tasks.write().await;
+            hidden.remove(download_id);
+        }
+
+        let task_snapshot = task.read().await.clone();
+        let _ = app_handle.emit("download-added", &task_snapshot);
+
+        let progress = ProgressEvent {
+            download_id: task_snapshot.id.clone(),
+            total_size: task_snapshot.total_size,
+            downloaded: task_snapshot.downloaded,
+            speed_bps: task_snapshot.speed_bps,
+            eta_seconds: task_snapshot.eta_seconds,
+            status: task_snapshot.status.clone(),
+            speed_limit_bps: task_snapshot.speed_limit_bps,
+            segments: task_snapshot
+                .segments
+                .iter()
+                .map(|s| SegmentProgress {
+                    id: s.id,
+                    downloaded: s.downloaded,
+                    total_size: s.total_size(),
+                    speed_bps: s.speed_bps,
+                    status: s.status.clone(),
+                    progress: s.progress(),
+                })
+                .collect(),
+        };
+        let _ = app_handle.emit("download-progress", &progress);
+
+        Ok(task_snapshot)
     }
 
     /// Try to start a download if we're under the concurrent limit
@@ -176,6 +410,7 @@ impl DownloadManager {
         let cancel_tokens = self.cancel_tokens.clone();
         let speed_limits = self.speed_limits.clone();
         let active_count = self.active_count.clone();
+        let hidden_tasks = self.hidden_tasks.clone();
         let download_id = download_id.to_string();
         let app_handle_clone = app_handle.clone();
         let all_tasks = self.tasks.clone();
@@ -188,6 +423,7 @@ impl DownloadManager {
                 cancel_token,
                 app_handle_clone.clone(),
                 limit_arc,
+                hidden_tasks,
             )
             .await;
 
@@ -207,12 +443,13 @@ impl DownloadManager {
                             // Clean up temp files and meta
                             let _ = DownloadEngine::cleanup_temp(&task.temp_dir()).await;
                             let _ = StateManager::delete_state(&task).await;
+                            let _ = StateManager::upsert_history(&task);
                         }
                     }
                     Err(e) => {
                         if task.status != DownloadStatus::Paused {
                             task.status = DownloadStatus::Failed;
-                            task.error = Some(e.clone());
+                            task.error = Some(Self::friendly_error(e));
                         }
                         task.speed_bps = 0.0;
                         // Save state for resume
@@ -287,6 +524,7 @@ impl DownloadManager {
         cancel_token: Arc<Mutex<bool>>,
         app_handle: AppHandle,
         task_speed_limit: Arc<RwLock<Option<u64>>>,
+        hidden_tasks: Arc<RwLock<HashSet<String>>>,
     ) -> Result<(), String> {
         let (url, supports_range, save_path, segments_data, total_size, ctx) = {
             let task = task_arc.read().await;
@@ -562,6 +800,17 @@ impl DownloadManager {
                 return Ok(());
             }
 
+            let download_id = task_arc.read().await.id.clone();
+            while hidden_tasks.read().await.contains(&download_id) {
+                if *cancel_token.lock().await {
+                    let mut task = task_arc.write().await;
+                    task.status = DownloadStatus::Paused;
+                    let _ = StateManager::save_state(&task).await;
+                    return Ok(());
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            }
+
             // Assemble the final file
             {
                 let mut task = task_arc.write().await;
@@ -656,11 +905,17 @@ impl DownloadManager {
             tasks.remove(download_id)
         };
 
+        {
+            let mut hidden = self.hidden_tasks.write().await;
+            hidden.remove(download_id);
+        }
+
         // Clean up files
         if let Some(task_arc) = task {
             let task = task_arc.read().await;
             let _ = DownloadEngine::cleanup_temp(&task.temp_dir()).await;
             let _ = StateManager::delete_state(&task).await;
+            let _ = StateManager::remove_history(&task.id);
         }
 
         Ok(())
@@ -669,8 +924,12 @@ impl DownloadManager {
     /// Get all downloads
     pub async fn get_all_downloads(&self) -> Vec<DownloadTask> {
         let tasks = self.tasks.read().await;
+        let hidden = self.hidden_tasks.read().await;
         let mut result = Vec::new();
-        for task_arc in tasks.values() {
+        for (id, task_arc) in tasks.iter() {
+            if hidden.contains(id) {
+                continue;
+            }
             result.push(task_arc.read().await.clone());
         }
         result.sort_by(|a, b| b.created_at.cmp(&a.created_at));

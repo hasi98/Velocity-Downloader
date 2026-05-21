@@ -191,23 +191,37 @@ pub struct SegmentProgress {
 /// Application settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
+    #[serde(default = "default_segments")]
     pub default_segments: usize,
+    #[serde(default = "default_download_dir")]
     pub default_download_dir: String,
+    #[serde(default)]
     pub temp_download_dir: Option<String>,
+    #[serde(default)]
     pub speed_limit_bps: Option<u64>,
+    #[serde(default)]
+    pub start_on_boot: bool,
+}
+
+fn default_segments() -> usize {
+    8
+}
+
+fn default_download_dir() -> String {
+    dirs::download_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .to_string_lossy()
+        .to_string()
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
-        let download_dir = dirs::download_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .to_string_lossy()
-            .to_string();
         Self {
             default_segments: 8,
-            default_download_dir: download_dir,
+            default_download_dir: default_download_dir(),
             temp_download_dir: None,
             speed_limit_bps: None,
+            start_on_boot: false,
         }
     }
 }

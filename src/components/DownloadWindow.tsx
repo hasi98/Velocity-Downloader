@@ -1,7 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
+import { LogicalSize } from '@tauri-apps/api/dpi';
 import type { DownloadTask, ProgressEvent } from '../types';
 import { formatBytes, formatSpeed } from '../utils';
 import '../index.css';
@@ -11,9 +13,15 @@ interface DownloadWindowProps {
   id: string;
 }
 
+const WINDOW_WIDTH = 650;
+const COMPACT_HEIGHT = 350;
+const MIN_EXPANDED_HEIGHT = 330;
+
 export function DownloadWindow({ id }: DownloadWindowProps) {
   const [task, setTask] = useState<DownloadTask | null>(null);
   const [limitInput, setLimitInput] = useState<string>('');
+  const [showSegments, setShowSegments] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     invoke<DownloadTask | null>('get_download', { downloadId: id }).then(t => {
@@ -68,6 +76,66 @@ export function DownloadWindow({ id }: DownloadWindowProps) {
     try { await invoke('set_task_speed_limit', { downloadId: id, limitBps }); } catch {}
   };
 
+  const handleToggleSegments = async () => {
+    if (!task) return;
+    setShowSegments(prev => !prev);
+  };
+
+  useEffect(() => {
+    if (!task) return;
+
+    let cancelled = false;
+    const resizeToContent = async () => {
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+      if (cancelled) return;
+
+      const appWindow = getCurrentWindow();
+
+      if (!showSegments) {
+        await appWindow.setSize(new LogicalSize(WINDOW_WIDTH, COMPACT_HEIGHT)).catch(() => {});
+        return;
+      }
+
+      const root = rootRef.current;
+      if (!root) return;
+
+      const rootStyle = window.getComputedStyle(root);
+      const gap = parseFloat(rootStyle.rowGap || rootStyle.gap || '0') || 0;
+      const paddingY =
+        (parseFloat(rootStyle.paddingTop || '0') || 0) +
+        (parseFloat(rootStyle.paddingBottom || '0') || 0);
+      const children = Array.from(root.children) as HTMLElement[];
+      const contentHeight = children.reduce((sum, child) => {
+        const childHeight = child.classList.contains('dw-segments')
+          ? child.scrollHeight
+          : child.offsetHeight;
+        return sum + childHeight;
+      }, paddingY + Math.max(0, children.length - 1) * gap);
+
+      const [outer, inner, monitor] = await Promise.all([
+        appWindow.outerSize().catch(() => null),
+        appWindow.innerSize().catch(() => null),
+        currentMonitor().catch(() => null),
+      ]);
+      const scaleFactor = monitor?.scaleFactor || window.devicePixelRatio || 1;
+      const frameDelta = outer && inner ? Math.max(0, (outer.height - inner.height) / scaleFactor) : 40;
+      const maxHeight = monitor
+        ? Math.floor(monitor.workArea.size.height / scaleFactor) - 32
+        : 760;
+      const nextHeight = Math.ceil(
+        Math.min(maxHeight, Math.max(MIN_EXPANDED_HEIGHT, contentHeight + frameDelta + 8))
+      );
+
+      await appWindow.setSize(new LogicalSize(WINDOW_WIDTH, nextHeight)).catch(() => {});
+    };
+
+    resizeToContent();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showSegments, task?.segments.length, task?.error]);
+
   if (!task) {
     return <div className="dw-loading">Loading...</div>;
   }
@@ -75,9 +143,10 @@ export function DownloadWindow({ id }: DownloadWindowProps) {
   const progress = task.total_size > 0 ? Math.min((task.downloaded / task.total_size) * 100, 100) : 0;
   const isActive = task.status === 'downloading' || task.status === 'assembling';
   const isFinished = task.status === 'completed';
+  const remainingBytes = task.total_size > 0 ? Math.max(task.total_size - task.downloaded, 0) : 0;
 
   return (
-    <div className="dw-root">
+    <div className="dw-root" ref={rootRef}>
 
       {/* File info strip */}
       <div className="dw-file-strip">
@@ -117,6 +186,10 @@ export function DownloadWindow({ id }: DownloadWindowProps) {
           <span className="dw-stat-value">{task.num_segments}</span>
         </div>
         <div className="dw-stat">
+          <span className="dw-stat-label">Remaining</span>
+          <span className="dw-stat-value">{task.total_size > 0 ? formatBytes(remainingBytes) : '—'}</span>
+        </div>
+        <div className="dw-stat">
           <span className="dw-stat-label">Resume</span>
           <span className="dw-stat-value">{task.supports_range ? 'Yes' : 'No'}</span>
         </div>
@@ -128,8 +201,14 @@ export function DownloadWindow({ id }: DownloadWindowProps) {
         <span className="dw-save-path" title={task.save_path}>{task.save_path}</span>
       </div>
 
+      {task.error && (
+        <div className="dw-error-row" title={task.error}>
+          {task.error}
+        </div>
+      )}
+
       {/* Segments */}
-      {task.segments.length > 1 && (
+      {task.segments.length > 1 && showSegments && (
         <div className="dw-segments">
           {task.segments.map((seg: any) => {
             const segProgress = seg.progress !== undefined
@@ -166,6 +245,11 @@ export function DownloadWindow({ id }: DownloadWindowProps) {
           <button className="dw-btn dw-btn-outline" onClick={handleSetLimit}>Apply</button>
         </div>
         <div className="dw-actions">
+          {task.segments.length > 1 && (
+            <button className="dw-btn dw-btn-outline" onClick={handleToggleSegments}>
+              {showSegments ? 'Less' : 'More'}
+            </button>
+          )}
           {isActive && <button className="dw-btn dw-btn-secondary" onClick={handlePause}>⏸ Pause</button>}
           {isActive && <button className="dw-btn dw-btn-secondary" onClick={handleStop}>⏹ Stop</button>}
           {!isActive && !isFinished && <button className="dw-btn dw-btn-primary" onClick={handleResume}>▶ Resume</button>}

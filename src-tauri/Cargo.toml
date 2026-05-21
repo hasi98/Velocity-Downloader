@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -31,6 +31,7 @@ dirs = "6"
 urlencoding = "2"
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
+tauri-plugin-autostart = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"

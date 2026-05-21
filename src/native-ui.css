@@ -428,14 +428,28 @@ html, body, #root {
   text-overflow: ellipsis;
 }
 
+.dw-error-row {
+  color: #f07070;
+  background: rgba(220, 60, 60, 0.12);
+  border: 1px solid rgba(220, 60, 60, 0.28);
+  border-radius: 4px;
+  padding: 7px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Segments */
 .dw-segments {
-  flex: 1;
+  flex: 0 1 auto;
+  min-height: 0;
   overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 6px;
   align-content: start;
+  scrollbar-gutter: stable;
 }
 
 .dw-segment {

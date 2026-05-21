@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { DownloadTask, ProgressEvent, Toast, HttpContext, ShowAddDownloadPayload } from './types';
 import { formatBytes, formatSpeed, formatEta, generateId, getFileIcon, getFileCategory } from './utils';
+import { openChildWindow } from './windowPlacement';
 import './index.css';
 import './native-ui.css';
 
@@ -36,22 +36,21 @@ function App() {
 
   const openDownloadWindow = useCallback(async (id: string, filename: string) => {
     const label = `dl-${id.replace(/[^a-zA-Z0-9]/g, '')}-${Date.now()}`;
-    const webview = new WebviewWindow(label, {
+    openChildWindow(label, {
       url: `?window=download&id=${id}`,
       title: `Downloading - ${filename}`,
       width: 650,
-      height: 420,
+      height: 350,
       minWidth: 500,
-      minHeight: 320,
+      minHeight: 330,
       resizable: true,
       decorations: true,
       alwaysOnTop: false,
-    });
-    webview.once('tauri://error', (e) => console.error('Download window error:', e));
+    }, (e) => console.error('Download window error:', e));
   }, []);
 
   const openSettingsWindow = useCallback(async () => {
-    const webview = new WebviewWindow('settings-window', {
+    openChildWindow('settings-window', {
       url: '?window=settings',
       title: 'Options',
       width: 780,
@@ -60,12 +59,7 @@ function App() {
       minHeight: 500,
       resizable: true,
       decorations: true,
-      center: true,
-    });
-    webview.once('tauri://error', () => {
-      // If window already exists, it will throw an error, so we bring it to front
-      invoke('bring_window_to_front').catch(() => {});
-    });
+    }, (e) => console.error('Settings window error:', e));
   }, []);
 
   const openAddDownloadWindow = useCallback((payload?: any) => {
@@ -73,23 +67,21 @@ function App() {
     if (payload) {
       localStorage.setItem(`add-dl-${id}`, JSON.stringify(payload));
     }
-    const webview = new WebviewWindow(`add-download-${id}`, {
+    openChildWindow(`add-download-${id}`, {
       url: `?window=add-download&id=${id}`,
       title: 'Add New Download',
       width: 600,
-      height: 440,
+      height: 360,
       minWidth: 500,
-      minHeight: 380,
+      minHeight: 320,
       resizable: true,
       decorations: true,
-      center: true,
       alwaysOnTop: false,
-    });
-    webview.once('tauri://error', (e) => console.error('Add window error:', e));
+    }, (e) => console.error('Add window error:', e));
   }, []);
 
   const openExtensionWindow = useCallback(() => {
-    const webview = new WebviewWindow('extensions-window', {
+    openChildWindow('extensions-window', {
       url: '?window=extensions',
       title: 'Install Extension',
       width: 800,
@@ -98,14 +90,12 @@ function App() {
       minHeight: 600,
       resizable: true,
       decorations: true,
-      center: true,
       alwaysOnTop: false,
-    });
-    webview.once('tauri://error', (e) => console.error('Ext window error:', e));
+    }, (e) => console.error('Ext window error:', e));
   }, []);
 
   const openBatchDownloadWindow = useCallback(() => {
-    const webview = new WebviewWindow(`batch-download-${Date.now()}`, {
+    openChildWindow(`batch-download-${Date.now()}`, {
       url: '?window=batch-download',
       title: 'Batch Download',
       width: 700,
@@ -114,10 +104,8 @@ function App() {
       minHeight: 400,
       resizable: true,
       decorations: true,
-      center: true,
       alwaysOnTop: false,
-    });
-    webview.once('tauri://error', (e) => console.error('Batch window error:', e));
+    }, (e) => console.error('Batch window error:', e));
   }, []);
 
   // Load initial data

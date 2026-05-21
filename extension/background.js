@@ -1,6 +1,7 @@
 const LOCAL_API = "http://127.0.0.1:41420";
 let isConnected = false;
 let excludedSites = [];
+const browserFallbackUrls = new Set();
 
 // Load excluded sites from storage
 chrome.storage.local.get(["excludedSites"], (result) => {
@@ -41,8 +42,97 @@ async function getCookieString(url) {
     }
 }
 
+async function sendUrlToVelocity(url, referer = "") {
+    await checkConnection();
+    if (!isConnected) {
+        throw new Error("Velocity Downloader is not running");
+    }
+
+    const cookieStr = await getCookieString(url);
+    const userAgent = navigator.userAgent;
+
+    const res = await fetch(`${LOCAL_API}/add_download`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            url,
+            cookies: cookieStr || null,
+            referer: referer || null,
+            user_agent: userAgent || null,
+        })
+    });
+
+    if (!res.ok) {
+        throw new Error(`Velocity server returned ${res.status}`);
+    }
+
+    const data = await res.json().catch(() => null);
+    if (data && data.success === false) {
+        throw new Error(data.message || "Velocity rejected the download");
+    }
+
+    return res;
+}
+
+function cancelBrowserDownload(downloadId) {
+    chrome.downloads.cancel(downloadId, () => {
+        const cancelError = chrome.runtime.lastError;
+        if (cancelError) {
+            console.warn("Could not cancel browser download:", cancelError.message);
+        }
+
+        chrome.downloads.erase({ id: downloadId }, () => {
+            const eraseError = chrome.runtime.lastError;
+            if (eraseError) {
+                console.warn("Could not erase canceled browser download:", eraseError.message);
+            }
+        });
+    });
+}
+
+function restoreBrowserDownload(url) {
+    browserFallbackUrls.add(url);
+    setTimeout(() => browserFallbackUrls.delete(url), 60000);
+
+    chrome.downloads.download({ url, saveAs: true }, () => {
+        const error = chrome.runtime.lastError;
+        if (error) {
+            console.error("Could not restore browser download:", error.message);
+            browserFallbackUrls.delete(url);
+        }
+    });
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+    chrome.contextMenus.create({
+        id: "download-with-velocity",
+        title: "Download with Velocity",
+        contexts: ["link", "image", "video", "audio"]
+    });
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+    if (info.menuItemId !== "download-with-velocity") return;
+
+    const targetUrl = info.linkUrl || info.srcUrl;
+    if (!targetUrl) return;
+
+    sendUrlToVelocity(targetUrl, info.pageUrl || tab?.url || "")
+        .then(() => console.log("Context menu URL sent to Velocity:", targetUrl))
+        .catch(err => console.error("Context menu send failed:", err));
+});
+
 // Intercept downloads
-chrome.downloads.onCreated.addListener(async (downloadItem) => {
+chrome.downloads.onCreated.addListener((downloadItem) => {
+    const targetUrl = downloadItem.finalUrl || downloadItem.url;
+
+    if (!targetUrl || browserFallbackUrls.has(targetUrl)) {
+        browserFallbackUrls.delete(targetUrl);
+        return;
+    }
+
     // Prevent infinite loops if our app initiates downloads that Chrome sees
     if (!isConnected) {
         console.log("Not connected to Velocity Downloader, allowing Chrome to download.");
@@ -50,49 +140,35 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
     }
 
     // Check if the site is excluded
-    const downloadUrl = new URL(downloadItem.url);
-    const domain = downloadUrl.hostname;
+    let domain = "";
+    try {
+        const downloadUrl = new URL(targetUrl);
+        if (!["http:", "https:"].includes(downloadUrl.protocol)) {
+            return;
+        }
+        domain = downloadUrl.hostname;
+    } catch (e) {
+        console.warn("Could not parse download URL, allowing browser download:", targetUrl);
+        return;
+    }
 
     if (excludedSites.includes(domain)) {
         console.log(`Site ${domain} is in exclusion list. Using browser download.`);
         return;
     }
 
-    chrome.downloads.pause(downloadItem.id, async () => {
-        console.log("Paused download to send to Velocity Downloader:", downloadItem.url);
+    const referer = downloadItem.referrer || "";
+    cancelBrowserDownload(downloadItem.id);
+    console.log("Canceled browser download and sending to Velocity Downloader:", targetUrl);
 
-        // Gather cookies, referer, and user-agent
-        const cookieStr = await getCookieString(downloadItem.url);
-        const referer = downloadItem.referrer || "";
-        const userAgent = navigator.userAgent;
-
-        try {
-            const res = await fetch(`${LOCAL_API}/add_download`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                    url: downloadItem.url,
-                    cookies: cookieStr || null,
-                    referer: referer || null,
-                    user_agent: userAgent || null,
-                })
-            });
-
-            if (res.ok) {
-                console.log("Successfully sent to Velocity Downloader!");
-                chrome.downloads.cancel(downloadItem.id);
-                chrome.downloads.erase({ id: downloadItem.id });
-            } else {
-                console.error("Failed to send, resuming in Chrome.");
-                chrome.downloads.resume(downloadItem.id);
-            }
-        } catch (e) {
+    sendUrlToVelocity(targetUrl, referer)
+        .then(() => {
+            console.log("Successfully sent to Velocity Downloader!");
+        })
+        .catch((e) => {
             console.error("Failed to send download to Velocity Downloader", e);
-            chrome.downloads.resume(downloadItem.id);
-        }
-    });
+            restoreBrowserDownload(targetUrl);
+        });
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -131,32 +207,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 return;
             }
 
-            // Collect cookies + context for the media URL, then send to IDM
             const mediaUrl = message.url;
             const referer = message.referer || "";
-            const userAgent = navigator.userAgent;
 
-            getCookieString(mediaUrl).then(cookieStr => {
-                return fetch(`${LOCAL_API}/add_download`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                    },
-                    body: JSON.stringify({
-                        url: mediaUrl,
-                        cookies: cookieStr || null,
-                        referer: referer || null,
-                        user_agent: userAgent || null,
-                    })
-                });
-            }).then(res => {
-                if (res.ok) {
-                    console.log("Successfully sent media URL to Velocity Downloader!");
-                    sendResponse({ success: true });
-                } else {
-                    console.error("Failed to send media URL to Velocity Downloader.");
-                    sendResponse({ success: false, error: "Server error" });
-                }
+            sendUrlToVelocity(mediaUrl, referer).then(() => {
+                console.log("Successfully sent media URL to Velocity Downloader!");
+                sendResponse({ success: true });
             }).catch(err => {
                 console.error("Failed to send video download to Velocity Downloader", err);
                 sendResponse({ success: false, error: err.toString() });

@@ -63,6 +63,7 @@ export interface AppSettings {
   default_download_dir: string;
   temp_download_dir: string | null;
   speed_limit_bps: number | null;
+  start_on_boot: boolean;
 }
 
 export interface ProbeResult {

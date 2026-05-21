@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "Velocity Downloader",
-        "width": 1200,
-        "height": 800,
-        "minWidth": 900,
-        "minHeight": 600,
+        "width": 980,
+        "height": 620,
+        "minWidth": 760,
+        "minHeight": 480,
         "decorations": true,
         "resizable": true,
         "center": true
