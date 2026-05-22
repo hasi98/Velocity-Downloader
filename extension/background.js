@@ -105,6 +105,39 @@ function restoreBrowserDownload(url) {
     });
 }
 
+function normalizeHost(hostname) {
+    return hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
+}
+
+function isPrivateIpv4(hostname) {
+    const parts = hostname.split(".");
+    if (parts.length !== 4) return false;
+
+    const nums = parts.map(part => Number(part));
+    if (nums.some(num => !Number.isInteger(num) || num < 0 || num > 255)) {
+        return false;
+    }
+
+    return nums[0] === 10 ||
+        nums[0] === 127 ||
+        nums[0] === 0 ||
+        (nums[0] === 169 && nums[1] === 254) ||
+        (nums[0] === 172 && nums[1] >= 16 && nums[1] <= 31) ||
+        (nums[0] === 192 && nums[1] === 168);
+}
+
+function isLocalOrPrivateHost(hostname) {
+    const host = normalizeHost(hostname);
+    return host === "localhost" ||
+        host === "::1" ||
+        host.startsWith("fe80:") ||
+        host.startsWith("fc") ||
+        host.startsWith("fd") ||
+        host.endsWith(".localhost") ||
+        host.endsWith(".local") ||
+        isPrivateIpv4(host);
+}
+
 chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.create({
         id: "download-with-velocity",
@@ -149,6 +182,11 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
         domain = downloadUrl.hostname;
     } catch (e) {
         console.warn("Could not parse download URL, allowing browser download:", targetUrl);
+        return;
+    }
+
+    if (isLocalOrPrivateHost(domain)) {
+        console.log("Local/private download URL ignored by Velocity:", targetUrl);
         return;
     }
 

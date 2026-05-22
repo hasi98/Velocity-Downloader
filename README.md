@@ -2,7 +2,7 @@
 
 Velocity Downloader is a Windows-focused download manager built with Tauri, Rust, React, and TypeScript. It is designed for fast segmented downloads, browser capture, persistent download history, and an IDM-style native desktop workflow.
 
-Download Windows Installer: [https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.2.0](https://github.com/hasi98/Velocity-Downloader/releases/tag/v0.2.0)
+Download Windows Installer: https://github.com/hasi98/Velocity-Downloader/releases/latest
 
 ## Features
 
@@ -23,6 +23,7 @@ Download Windows Installer: [https://github.com/hasi98/Velocity-Downloader/relea
 - Browser fallback if Velocity cannot accept an intercepted download.
 - Tray icon support with hide-on-close behavior.
 - Optional "Start with Windows" setting.
+- Signed auto-update support through Tauri updater and GitHub Releases.
 - Native child-window placement so Add Download, Settings, Batch, Extension, and progress windows open over the main app.
 - Updated app, taskbar, titlebar, tray, installer, and web favicon icons.
 
@@ -84,11 +85,27 @@ Create the Windows executable and installers:
 npm run tauri build
 ```
 
+Updater release builds must be signed with the private updater key:
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw "$HOME\.tauri\velocity-downloader.key"
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<your-updater-key-password>"
+npm run tauri build
+npm run updater:manifest -- --tag=vX.Y.Z
+```
+
 Build outputs are generated here:
 
 - Standalone executable: `src-tauri/target/release/velocity-downloader.exe`
 - NSIS installer: `src-tauri/target/release/bundle/nsis/`
 - MSI installer: `src-tauri/target/release/bundle/msi/`
+- Updater manifest: `src-tauri/target/release/bundle/latest.json`
+
+For GitHub Releases, upload the NSIS installer, its `.sig` file, and `latest.json`. The app checks:
+
+```text
+https://github.com/hasi98/Velocity-Downloader/releases/latest/download/latest.json
+```
 
 ## Browser Extension
 

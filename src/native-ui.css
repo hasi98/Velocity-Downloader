@@ -139,6 +139,11 @@
   overflow: auto;
   display: flex;
   flex-direction: column;
+  outline: none;
+}
+
+.native-table-container:focus {
+  box-shadow: inset 0 0 0 1px #0078d4;
 }
 
 /* Download Table */
@@ -193,6 +198,7 @@
 .native-table tbody tr {
   cursor: pointer;
   height: 24px;
+  user-select: none;
 }
 
 .native-table tbody tr:nth-child(even) {
@@ -798,10 +804,14 @@ html, body, #root {
 .ns-panel {
   display: flex;
   flex-direction: column;
-  gap: 28px;
-  max-width: 800px;
+  gap: 16px;
+  width: 100%;
+  max-width: 860px;
+  height: 100vh;
   margin: 0 auto;
-  padding: 10px 20px 40px;
+  padding: 14px 22px 22px;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .ns-title-row {
@@ -817,6 +827,51 @@ html, body, #root {
   font-weight: 600;
   color: #fff;
   margin: 0;
+}
+
+.ns-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid #3f3f46;
+  flex-shrink: 0;
+}
+
+.ns-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  color: #aaa;
+  padding: 9px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+}
+
+.ns-tab:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+}
+
+.ns-tab.active {
+  background: #252526;
+  border-color: #3f3f46;
+  color: #fff;
+  box-shadow: inset 0 -2px 0 #0078d4;
+}
+
+.ns-tab-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.ns-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 4px;
 }
 
 .ns-section {
@@ -856,6 +911,7 @@ html, body, #root {
   flex-direction: column;
   gap: 4px;
   flex: 1;
+  min-width: 0;
   padding-right: 24px;
 }
 
@@ -903,6 +959,15 @@ html, body, #root {
   color: #888;
   width: 32px;
   text-align: left;
+}
+
+.ns-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #ccc;
+  font-size: 13px;
+  flex-shrink: 0;
 }
 
 .ns-path-row {
@@ -972,6 +1037,36 @@ html, body, #root {
 
 .ns-status.ok .ns-status-dot {
   animation: ns-blink 1.5s ease-in-out infinite;
+}
+
+.ns-update-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.ns-update-notes {
+  margin-top: 4px;
+  white-space: pre-wrap;
+  max-height: 72px;
+  overflow: auto;
+}
+
+.ns-update-progress {
+  width: min(360px, 100%);
+  height: 6px;
+  background: #1e1e1e;
+  border: 1px solid #3f3f46;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.ns-update-progress-fill {
+  height: 100%;
+  background: #0078d4;
+  transition: width 0.2s ease;
 }
 
 @keyframes ns-blink {

@@ -5,7 +5,7 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import type { DownloadTask, ProgressEvent } from '../types';
-import { formatBytes, formatSpeed } from '../utils';
+import { formatBytes, formatSpeed, formatEta } from '../utils';
 import '../index.css';
 import '../native-ui.css';
 
@@ -179,7 +179,7 @@ export function DownloadWindow({ id }: DownloadWindowProps) {
         </div>
         <div className="dw-stat">
           <span className="dw-stat-label">Time Left</span>
-          <span className="dw-stat-value">{isActive && task.eta_seconds > 0 ? `${Math.floor(task.eta_seconds)}s` : '—'}</span>
+          <span className="dw-stat-value">{isActive ? formatEta(task.eta_seconds) : '—'}</span>
         </div>
         <div className="dw-stat">
           <span className="dw-stat-label">Segments</span>

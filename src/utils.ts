@@ -21,11 +21,15 @@ export function formatSpeed(bytesPerSecond: number): string {
 export function formatEta(seconds: number): string {
     if (seconds <= 0 || !isFinite(seconds)) return '—';
 
-    const hrs = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = Math.floor(seconds % 60);
+    const totalSeconds = Math.floor(seconds);
+    const days = Math.floor(totalSeconds / 86400);
+    const hrs = Math.floor((totalSeconds % 86400) / 3600);
+    const mins = Math.floor((totalSeconds % 3600) / 60);
+    const secs = totalSeconds % 60;
 
-    if (hrs > 0) {
+    if (days > 0) {
+        return `${days}d ${hrs}h ${mins}m`;
+    } else if (hrs > 0) {
         return `${hrs}h ${mins}m ${secs}s`;
     } else if (mins > 0) {
         return `${mins}m ${secs}s`;

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { check } from '@tauri-apps/plugin-updater';
 import type { DownloadTask, ProgressEvent, Toast, HttpContext, ShowAddDownloadPayload } from './types';
 import { formatBytes, formatSpeed, formatEta, generateId, getFileIcon, getFileCategory } from './utils';
 import { openChildWindow } from './windowPlacement';
@@ -13,12 +14,15 @@ function App() {
   const [downloads, setDownloads] = useState<DownloadTask[]>([]);
   const [category, setCategory] = useState<string>('all');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
 
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [httpContext, setHttpContext] = useState<HttpContext>({});
 
   const downloadsRef = useRef<DownloadTask[]>([]);
+  const tableContainerRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => { downloadsRef.current = downloads; }, [downloads]);
 
   // Close context menu on click outside
@@ -127,6 +131,20 @@ function App() {
     init();
   }, []);
 
+  useEffect(() => {
+    const key = 'velocity-last-update-check';
+    const lastCheck = Number(localStorage.getItem(key) || 0);
+    const sixHours = 6 * 60 * 60 * 1000;
+    if (Date.now() - lastCheck < sixHours) return;
+
+    localStorage.setItem(key, Date.now().toString());
+    check({ timeout: 15000 })
+      .then(update => {
+        if (update) addToast('info', `Update ${update.version} available. Open Options to install.`);
+      })
+      .catch(() => {});
+  }, [addToast]);
+
   // Event listeners
   useEffect(() => {
     const unlistenProgress = listen<ProgressEvent>('download-progress', (event) => {
@@ -190,12 +208,19 @@ function App() {
     try { await invoke('resume_download', { downloadId: id }); } catch {}
   };
 
-  const handleRemove = async (id: string) => {
+  const handleRemoveMany = async (ids: string[]) => {
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length === 0) return;
+
     try {
-      await invoke('remove_download', { downloadId: id });
-      setDownloads(prev => prev.filter(d => d.id !== id));
-      if (selectedId === id) setSelectedId(null);
-    } catch {}
+      await Promise.all(uniqueIds.map(id => invoke('remove_download', { downloadId: id })));
+      setDownloads(prev => prev.filter(d => !uniqueIds.includes(d.id)));
+      setSelectedIds(prev => prev.filter(id => !uniqueIds.includes(id)));
+      if (selectedId && uniqueIds.includes(selectedId)) setSelectedId(null);
+      if (selectionAnchorId && uniqueIds.includes(selectionAnchorId)) setSelectionAnchorId(null);
+    } catch (e) {
+      addToast('error', typeof e === 'string' ? e : 'Failed to delete selected downloads');
+    }
   };
 
   const handleStopAll = async () => {
@@ -203,8 +228,6 @@ function App() {
       if (d.status === 'downloading' || d.status === 'assembling') handlePause(d.id);
     });
   };
-
-  const selectedDownload = downloads.find(d => d.id === selectedId);
 
   const displayedDownloads = downloads.filter(d => {
     if (category === 'unfinished') return d.status !== 'completed';
@@ -215,14 +238,170 @@ function App() {
     return true;
   });
 
+  const displayedIds = displayedDownloads.map(d => d.id);
+  const selectedIdSet = new Set(selectedIds);
+  const selectedDownloads = downloads.filter(d => selectedIdSet.has(d.id));
+  const selectedDownload = downloads.find(d => d.id === selectedId) ?? selectedDownloads[0] ?? null;
+  const hasSelection = selectedIds.length > 0;
+  const hasActiveSelection = selectedDownloads.some(d => d.status === 'downloading' || d.status === 'assembling');
+  const hasResumableSelection = selectedDownloads.some(d =>
+    d.status !== 'downloading' && d.status !== 'assembling' && d.status !== 'completed'
+  );
+
+  useEffect(() => {
+    const visibleIds = new Set(displayedDownloads.map(d => d.id));
+    setSelectedIds(prev => prev.filter(id => visibleIds.has(id)));
+    setSelectedId(prev => (prev && visibleIds.has(prev) ? prev : null));
+    setSelectionAnchorId(prev => (prev && visibleIds.has(prev) ? prev : null));
+  }, [downloads, category]);
+
+  const focusTable = () => {
+    tableContainerRef.current?.focus({ preventScroll: true });
+  };
+
+  const scrollRowIntoView = (id: string) => {
+    requestAnimationFrame(() => {
+      document.querySelector(`[data-download-row="${CSS.escape(id)}"]`)?.scrollIntoView({
+        block: 'nearest',
+        inline: 'nearest',
+      });
+    });
+  };
+
+  const getRangeIds = (fromId: string, toId: string) => {
+    const fromIndex = displayedIds.indexOf(fromId);
+    const toIndex = displayedIds.indexOf(toId);
+    if (fromIndex === -1 || toIndex === -1) return [toId];
+
+    const start = Math.min(fromIndex, toIndex);
+    const end = Math.max(fromIndex, toIndex);
+    return displayedIds.slice(start, end + 1);
+  };
+
+  const selectSingle = (id: string) => {
+    setSelectedId(id);
+    setSelectedIds([id]);
+    setSelectionAnchorId(id);
+    focusTable();
+    scrollRowIntoView(id);
+  };
+
+  const selectRange = (id: string, additive = false) => {
+    const anchor = selectionAnchorId && displayedIds.includes(selectionAnchorId)
+      ? selectionAnchorId
+      : selectedId && displayedIds.includes(selectedId)
+        ? selectedId
+        : id;
+    const rangeIds = getRangeIds(anchor, id);
+    setSelectedId(id);
+    setSelectedIds(prev => additive ? [...new Set([...prev, ...rangeIds])] : rangeIds);
+    if (!selectionAnchorId) setSelectionAnchorId(anchor);
+    focusTable();
+    scrollRowIntoView(id);
+  };
+
+  const toggleSelection = (id: string) => {
+    setSelectedIds(prev => {
+      const next = prev.includes(id) ? prev.filter(selected => selected !== id) : [...prev, id];
+      setSelectedId(next.includes(id) ? id : next[next.length - 1] ?? null);
+      return next;
+    });
+    setSelectionAnchorId(id);
+    focusTable();
+    scrollRowIntoView(id);
+  };
+
+  const handleRowClick = (e: React.MouseEvent, id: string) => {
+    if (e.shiftKey) {
+      selectRange(id, e.ctrlKey || e.metaKey);
+    } else if (e.ctrlKey || e.metaKey) {
+      toggleSelection(id);
+    } else {
+      selectSingle(id);
+    }
+  };
+
   const handleRowContextMenu = (e: React.MouseEvent, id: string) => {
     e.preventDefault();
     e.stopPropagation();
-    setSelectedId(id);
+    if (!selectedIdSet.has(id)) {
+      setSelectedId(id);
+      setSelectedIds([id]);
+      setSelectionAnchorId(id);
+    }
     setContextMenu({ x: e.clientX, y: e.clientY, id });
   };
 
+  const handleTableKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (displayedIds.length === 0) return;
+
+    const currentIndex = selectedId ? displayedIds.indexOf(selectedId) : -1;
+    const fallbackIndex = currentIndex === -1 ? 0 : currentIndex;
+    let nextIndex: number | null = null;
+
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      setSelectedIds(displayedIds);
+      setSelectedId(displayedIds[displayedIds.length - 1] ?? null);
+      setSelectionAnchorId(displayedIds[0] ?? null);
+      return;
+    }
+
+    switch (e.key) {
+      case 'ArrowDown':
+        nextIndex = currentIndex === -1 ? 0 : Math.min(fallbackIndex + 1, displayedIds.length - 1);
+        break;
+      case 'ArrowUp':
+        nextIndex = Math.max(fallbackIndex - 1, 0);
+        break;
+      case 'Home':
+        nextIndex = 0;
+        break;
+      case 'End':
+        nextIndex = displayedIds.length - 1;
+        break;
+      case 'PageDown':
+        nextIndex = currentIndex === -1 ? 0 : Math.min(fallbackIndex + 10, displayedIds.length - 1);
+        break;
+      case 'PageUp':
+        nextIndex = Math.max(fallbackIndex - 10, 0);
+        break;
+      case ' ':
+        e.preventDefault();
+        toggleSelection(displayedIds[fallbackIndex]);
+        return;
+      case 'Enter':
+        e.preventDefault();
+        if (selectedDownload) openDownloadWindow(selectedDownload.id, selectedDownload.filename);
+        return;
+      case 'Delete':
+      case 'Backspace':
+        e.preventDefault();
+        handleRemoveMany(selectedIds);
+        return;
+      case 'Escape':
+        e.preventDefault();
+        setSelectedId(null);
+        setSelectedIds([]);
+        setSelectionAnchorId(null);
+        return;
+      default:
+        return;
+    }
+
+    e.preventDefault();
+    const nextId = displayedIds[nextIndex];
+    if (e.shiftKey) {
+      selectRange(nextId, e.ctrlKey || e.metaKey);
+    } else {
+      selectSingle(nextId);
+    }
+  };
+
   const ctxDownload = contextMenu ? downloads.find(d => d.id === contextMenu.id) : null;
+  const contextSelectionIds = contextMenu
+    ? selectedIdSet.has(contextMenu.id) ? selectedIds : [contextMenu.id]
+    : [];
 
   return (
     <div className="native-app">
@@ -238,16 +417,20 @@ function App() {
         </button>
         <button
           className="toolbar-btn"
-          disabled={!selectedDownload || selectedDownload.status === 'downloading' || selectedDownload.status === 'completed'}
-          onClick={() => selectedId && handleResume(selectedId)}
+          disabled={!hasResumableSelection}
+          onClick={() => selectedDownloads
+            .filter(d => d.status !== 'downloading' && d.status !== 'assembling' && d.status !== 'completed')
+            .forEach(d => handleResume(d.id))}
         >
           <span className="toolbar-icon">▶️</span>
           <span className="toolbar-text">Resume</span>
         </button>
         <button
           className="toolbar-btn"
-          disabled={!selectedDownload || (selectedDownload.status !== 'downloading' && selectedDownload.status !== 'assembling')}
-          onClick={() => selectedId && handlePause(selectedId)}
+          disabled={!hasActiveSelection}
+          onClick={() => selectedDownloads
+            .filter(d => d.status === 'downloading' || d.status === 'assembling')
+            .forEach(d => handlePause(d.id))}
         >
           <span className="toolbar-icon">⏹️</span>
           <span className="toolbar-text">Stop</span>
@@ -258,8 +441,8 @@ function App() {
         </button>
         <button
           className="toolbar-btn"
-          disabled={!selectedId}
-          onClick={() => selectedId && handleRemove(selectedId)}
+          disabled={!hasSelection}
+          onClick={() => handleRemoveMany(selectedIds)}
         >
           <span className="toolbar-icon">🗑️</span>
           <span className="toolbar-text">Delete</span>
@@ -294,8 +477,14 @@ function App() {
             </div>
 
             {/* Right Pane Table */}
-            <div className="native-table-container">
-              <table className="native-table">
+            <div
+              className="native-table-container"
+              ref={tableContainerRef}
+              tabIndex={0}
+              onKeyDown={handleTableKeyDown}
+              aria-label="Download history"
+            >
+              <table className="native-table" aria-multiselectable="true">
                 <thead>
                   <tr>
                     <th>File Name</th>
@@ -316,8 +505,10 @@ function App() {
                     return (
                       <tr
                         key={d.id}
-                        className={selectedId === d.id ? 'selected' : ''}
-                        onClick={() => setSelectedId(d.id)}
+                        data-download-row={d.id}
+                        className={selectedIdSet.has(d.id) ? 'selected' : ''}
+                        aria-selected={selectedIdSet.has(d.id)}
+                        onClick={e => handleRowClick(e, d.id)}
                         onDoubleClick={() => openDownloadWindow(d.id, d.filename)}
                         onContextMenu={e => handleRowContextMenu(e, d.id)}
                       >
@@ -398,7 +589,7 @@ function App() {
             📁 Copy Save Path
           </button>
           <div className="ctx-divider" />
-          <button className="ctx-item ctx-danger" onClick={() => { handleRemove(contextMenu.id); setContextMenu(null); }}>
+          <button className="ctx-item ctx-danger" onClick={() => { handleRemoveMany(contextSelectionIds); setContextMenu(null); }}>
             🗑 Delete
           </button>
         </div>
