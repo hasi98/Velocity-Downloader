@@ -169,6 +169,30 @@ function isLocalOrPrivateHost(hostname) {
         isPrivateIpv4(host);
 }
 
+function extensionFromUrlOrFilename(url, filename = "") {
+    const fromFilename = filename.split(/[\\/]/).pop() || "";
+    const filenameExt = fromFilename.includes(".")
+        ? fromFilename.split(".").pop().toLowerCase()
+        : "";
+    if (filenameExt) return filenameExt;
+
+    try {
+        const path = new URL(url).pathname;
+        const name = path.split("/").pop() || "";
+        return name.includes(".") ? name.split(".").pop().toLowerCase() : "";
+    } catch {
+        return "";
+    }
+}
+
+function isImageDownload(downloadItem, targetUrl) {
+    const mime = (downloadItem.mime || "").toLowerCase();
+    if (mime.startsWith("image/")) return true;
+
+    const ext = extensionFromUrlOrFilename(targetUrl, downloadItem.filename || "");
+    return ["png", "jpg", "jpeg", "webp", "gif", "svg", "ico", "bmp", "avif"].includes(ext);
+}
+
 chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.create({
         id: "download-with-velocity",
@@ -194,6 +218,16 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
 
     if (!targetUrl || browserFallbackUrls.has(targetUrl)) {
         browserFallbackUrls.delete(targetUrl);
+        return;
+    }
+
+    if (downloadItem.saveAs) {
+        console.log("Browser Save As download ignored by VDM:", targetUrl);
+        return;
+    }
+
+    if (isImageDownload(downloadItem, targetUrl)) {
+        console.log("Image download ignored by VDM. Use the context menu to send it manually:", targetUrl);
         return;
     }
 
