@@ -5,7 +5,18 @@ use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, Semaphore};
+
+const GLOBAL_CONNECTION_LIMIT: usize = 64;
+const MAX_DOWNLOAD_RETRIES: u64 = 10;
+
+pub struct DownloadAnalysis {
+    pub filename: String,
+    pub size: u64,
+    pub save_path: String,
+    pub is_media: bool,
+    pub formats: Vec<crate::media::MediaFormatOption>,
+}
 
 /// The download manager orchestrating all concurrent downloads
 pub struct DownloadManager {
@@ -16,6 +27,7 @@ pub struct DownloadManager {
     active_count: Arc<Mutex<usize>>,
     speed_limits: Arc<RwLock<HashMap<String, Arc<RwLock<Option<u64>>>>>>,
     hidden_tasks: Arc<RwLock<HashSet<String>>>,
+    connection_semaphore: Arc<Semaphore>,
 }
 
 impl DownloadManager {
@@ -31,6 +43,7 @@ impl DownloadManager {
             active_count: Arc::new(Mutex::new(0)),
             speed_limits: Arc::new(RwLock::new(HashMap::new())),
             hidden_tasks: Arc::new(RwLock::new(HashSet::new())),
+            connection_semaphore: Arc::new(Semaphore::new(GLOBAL_CONNECTION_LIMIT)),
         }
     }
 
@@ -75,7 +88,10 @@ impl DownloadManager {
         task.speed_bps = 0.0;
         task.eta_seconds = 0.0;
 
-        if matches!(task.status, DownloadStatus::Downloading | DownloadStatus::Assembling | DownloadStatus::Queued) {
+        if matches!(
+            task.status,
+            DownloadStatus::Downloading | DownloadStatus::Assembling | DownloadStatus::Queued
+        ) {
             task.status = DownloadStatus::Paused;
         }
 
@@ -174,16 +190,31 @@ impl DownloadManager {
         let lower = error.to_lowercase();
         if lower.contains("got html page instead of file") || lower.contains("text/html") {
             "The server returned a web page instead of the file. The link may require a fresh login, cookies, or a refreshed URL.".to_string()
-        } else if lower.contains("returned 200 instead of 206") || lower.contains("does not support range") {
+        } else if lower.contains("returned 200 instead of 206")
+            || lower.contains("does not support range")
+        {
             "This server does not support multi-part resume downloads. Try again as a single connection or refresh the link.".to_string()
         } else if lower.contains("no space") || lower.contains("disk full") {
             "Not enough disk space for this download.".to_string()
         } else if lower.contains("permission denied") || lower.contains("access is denied") {
             "Velocity cannot write to the selected folder. Choose another save location or check folder permissions.".to_string()
-        } else if lower.contains("timed out") || lower.contains("timeout") || lower.contains("stalled") {
-            "The connection stalled or timed out. Use Retry to continue from the saved progress.".to_string()
+        } else if lower.contains("timed out")
+            || lower.contains("timeout")
+            || lower.contains("stalled")
+        {
+            "The connection stalled or timed out. Use Retry to continue from the saved progress."
+                .to_string()
         } else if lower.contains("too many redirects") {
             "The link redirected too many times. The URL may be expired or protected.".to_string()
+        } else if lower.contains("requested format is not available")
+            || lower.contains("format unavailable")
+        {
+            "Format unavailable, try a different quality".to_string()
+        } else if lower.contains("ffmpeg") {
+            "yt-dlp needs FFmpeg to merge this media. Install FFmpeg or place ffmpeg.exe next to Velocity Downloader, then retry.".to_string()
+        } else if lower.contains("yt-dlp was not found") || lower.contains("no module named yt_dlp")
+        {
+            "Media downloads need yt-dlp. Install yt-dlp, place yt-dlp.exe next to Velocity Downloader, or set VELOCITY_YTDLP.".to_string()
         } else {
             error.to_string()
         }
@@ -195,10 +226,114 @@ impl DownloadManager {
         url: String,
         save_path: Option<String>,
         filename_override: Option<String>,
+        media_format: Option<String>,
         ctx: HttpContext,
-        app_handle: AppHandle,
+        app_handle: Option<AppHandle>,
     ) -> Result<DownloadTask, String> {
-        self.add_download_internal(url, save_path, filename_override, ctx, app_handle, true).await
+        self.add_download_internal(
+            url,
+            save_path,
+            filename_override,
+            media_format,
+            None,
+            ctx,
+            app_handle,
+            true,
+            true,
+            false,
+            None,
+            false,
+            0,
+        )
+        .await
+    }
+
+    pub async fn add_download_with_expected_size(
+        &self,
+        url: String,
+        save_path: Option<String>,
+        filename_override: Option<String>,
+        media_format: Option<String>,
+        expected_size: Option<u64>,
+        ctx: HttpContext,
+        app_handle: Option<AppHandle>,
+    ) -> Result<DownloadTask, String> {
+        self.add_download_internal(
+            url,
+            save_path,
+            filename_override,
+            media_format,
+            expected_size,
+            ctx,
+            app_handle,
+            true,
+            true,
+            false,
+            None,
+            false,
+            0,
+        )
+        .await
+    }
+
+    pub async fn queue_download_with_expected_size(
+        &self,
+        url: String,
+        save_path: Option<String>,
+        filename_override: Option<String>,
+        media_format: Option<String>,
+        expected_size: Option<u64>,
+        ctx: HttpContext,
+        app_handle: Option<AppHandle>,
+    ) -> Result<DownloadTask, String> {
+        self.add_download_internal(
+            url,
+            save_path,
+            filename_override,
+            media_format,
+            expected_size,
+            ctx,
+            app_handle,
+            true,
+            false,
+            true,
+            None,
+            false,
+            0,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn queue_batch_download_with_expected_size(
+        &self,
+        url: String,
+        save_path: Option<String>,
+        filename_override: Option<String>,
+        media_format: Option<String>,
+        expected_size: Option<u64>,
+        ctx: HttpContext,
+        app_handle: Option<AppHandle>,
+        batch_group_id: String,
+        batch_sequential: bool,
+        batch_queue_index: usize,
+    ) -> Result<DownloadTask, String> {
+        self.add_download_internal(
+            url,
+            save_path,
+            filename_override,
+            media_format,
+            expected_size,
+            ctx,
+            app_handle,
+            true,
+            false,
+            true,
+            Some(batch_group_id),
+            batch_sequential,
+            batch_queue_index,
+        )
+        .await
     }
 
     /// Add a download that starts immediately but stays hidden until explicitly revealed.
@@ -207,10 +342,98 @@ impl DownloadManager {
         url: String,
         save_path: Option<String>,
         filename_override: Option<String>,
+        media_format: Option<String>,
         ctx: HttpContext,
-        app_handle: AppHandle,
+        app_handle: Option<AppHandle>,
     ) -> Result<DownloadTask, String> {
-        self.add_download_internal(url, save_path, filename_override, ctx, app_handle, false).await
+        self.add_download_internal(
+            url,
+            save_path,
+            filename_override,
+            media_format,
+            None,
+            ctx,
+            app_handle,
+            false,
+            true,
+            false,
+            None,
+            false,
+            0,
+        )
+        .await
+    }
+
+    pub async fn analyze_download(
+        &self,
+        url: String,
+        ctx: HttpContext,
+        app_handle: Option<AppHandle>,
+    ) -> Result<DownloadAnalysis, String> {
+        let media_candidate = crate::media::is_likely_media_page_url(&url);
+        let (size, filename, is_media, formats) = if media_candidate {
+            let info = crate::media::probe_media_url(&url, &ctx, app_handle.as_ref()).await?;
+            (
+                info.filesize.unwrap_or(0),
+                info.filename,
+                true,
+                info.formats,
+            )
+        } else {
+            match self.engine.probe_url(&url, &ctx).await {
+                Ok((total_size, _supports_range, content_type, filename)) => {
+                    if crate::media::is_html_content_type(&content_type) {
+                        if let Ok(info) =
+                            crate::media::probe_media_url(&url, &ctx, app_handle.as_ref()).await
+                        {
+                            (
+                                info.filesize.unwrap_or(0),
+                                info.filename,
+                                true,
+                                info.formats,
+                            )
+                        } else {
+                            (total_size, filename, false, Vec::new())
+                        }
+                    } else {
+                        (total_size, filename, false, Vec::new())
+                    }
+                }
+                Err(direct_error) => match crate::media::probe_media_url(
+                    &url,
+                    &ctx,
+                    app_handle.as_ref(),
+                )
+                .await
+                {
+                    Ok(info) => (
+                        info.filesize.unwrap_or(0),
+                        info.filename,
+                        true,
+                        info.formats,
+                    ),
+                    Err(_) => return Err(direct_error),
+                },
+            }
+        };
+
+        let filename = Self::sanitize_filename(&filename);
+        let settings = self.settings.read().await;
+        let base_dir = settings.default_download_dir.clone();
+        drop(settings);
+
+        let save_dir = std::path::PathBuf::from(base_dir).join(Self::category_for_filename(&filename));
+        let save_path = Self::unique_save_path(&save_dir.to_string_lossy(), &filename)
+            .to_string_lossy()
+            .to_string();
+
+        Ok(DownloadAnalysis {
+            filename,
+            size,
+            save_path,
+            is_media,
+            formats,
+        })
     }
 
     async fn add_download_internal(
@@ -218,13 +441,101 @@ impl DownloadManager {
         url: String,
         save_path: Option<String>,
         filename_override: Option<String>,
+        media_format: Option<String>,
+        expected_size: Option<u64>,
         ctx: HttpContext,
-        app_handle: AppHandle,
+        app_handle: Option<AppHandle>,
         visible: bool,
+        auto_start: bool,
+        scheduled_queue: bool,
+        batch_group_id: Option<String>,
+        batch_sequential: bool,
+        batch_queue_index: usize,
     ) -> Result<DownloadTask, String> {
-        // Probe the URL with the browser context so auth cookies are applied
-        let (total_size, supports_range, content_type, filename) =
-            self.engine.probe_url(&url, &ctx).await?;
+        // Probe the URL with the browser context so auth cookies are applied.
+        let media_candidate = crate::media::is_likely_media_page_url(&url);
+        let can_use_media_analysis = media_candidate
+            && filename_override
+                .as_deref()
+                .map(|name| !name.trim().is_empty())
+                .unwrap_or(false)
+            && media_format
+                .as_deref()
+                .map(|format| !format.trim().is_empty())
+                .unwrap_or(false)
+            && expected_size.unwrap_or_default() > 0;
+        let (mut total_size, supports_range, content_type, filename, download_kind) = if media_candidate
+            && can_use_media_analysis
+        {
+            (
+                expected_size.unwrap_or(0),
+                false,
+                Some("video/media".to_string()),
+                filename_override.clone().unwrap_or_else(|| "media.mp4".to_string()),
+                DownloadKind::Media,
+            )
+        } else if media_candidate
+        {
+            let info = crate::media::probe_media_url(&url, &ctx, app_handle.as_ref()).await?;
+            (
+                info.filesize.unwrap_or(0),
+                false,
+                info.content_type,
+                info.filename,
+                DownloadKind::Media,
+            )
+        } else {
+            match self.engine.probe_url(&url, &ctx).await {
+                Ok((total_size, supports_range, content_type, filename)) => {
+                    if crate::media::is_html_content_type(&content_type) {
+                        if let Ok(info) =
+                            crate::media::probe_media_url(&url, &ctx, app_handle.as_ref()).await
+                        {
+                            (
+                                info.filesize.unwrap_or(0),
+                                false,
+                                info.content_type,
+                                info.filename,
+                                DownloadKind::Media,
+                            )
+                        } else {
+                            (
+                                total_size,
+                                supports_range,
+                                content_type,
+                                filename,
+                                DownloadKind::Direct,
+                            )
+                        }
+                    } else {
+                        (
+                            total_size,
+                            supports_range,
+                            content_type,
+                            filename,
+                            DownloadKind::Direct,
+                        )
+                    }
+                }
+                Err(direct_error) => {
+                    match crate::media::probe_media_url(&url, &ctx, app_handle.as_ref()).await {
+                        Ok(info) => (
+                            info.filesize.unwrap_or(0),
+                            false,
+                            info.content_type,
+                            info.filename,
+                            DownloadKind::Media,
+                        ),
+                        Err(_) => return Err(direct_error),
+                    }
+                }
+            }
+        };
+        if download_kind == DownloadKind::Media {
+            if let Some(size) = expected_size.filter(|size| *size > 0) {
+                total_size = size;
+            }
+        }
         let filename = filename_override
             .filter(|name| !name.trim().is_empty())
             .unwrap_or(filename);
@@ -234,7 +545,7 @@ impl DownloadManager {
         let save_dir = save_path.unwrap_or_else(|| {
             let base = settings.default_download_dir.clone();
             let category = Self::category_for_filename(&filename);
-            
+
             let path = std::path::PathBuf::from(base).join(category);
             let _ = std::fs::create_dir_all(&path); // Ensure directory exists
             path.to_string_lossy().to_string()
@@ -256,11 +567,26 @@ impl DownloadManager {
         task.total_size = total_size;
         task.supports_range = supports_range;
         task.content_type = content_type;
+        task.download_kind = download_kind.clone();
+        task.media_format = media_format.filter(|format| !format.trim().is_empty());
         task.http_context = ctx;
         task.temp_dir_override = temp_dir_override;
         task.speed_limit_bps = global_speed_limit;
+        task.scheduled_queue = scheduled_queue;
+        task.batch_group_id = batch_group_id;
+        task.batch_sequential = batch_sequential;
+        task.batch_queue_index = batch_queue_index;
 
-        if supports_range && total_size > 0 {
+        if download_kind == DownloadKind::Media {
+            task.num_segments = 1;
+            let temp_dir = task.temp_dir();
+            task.segments = vec![Segment::new(0, 0, total_size.saturating_sub(1), &temp_dir)];
+
+            log::info!(
+                "Download configured: media engine, total_size={}",
+                total_size
+            );
+        } else if supports_range && total_size > 0 {
             let settings = self.settings.read().await;
             let num_segments =
                 DownloadEngine::calculate_segments(total_size, settings.default_segments);
@@ -272,14 +598,20 @@ impl DownloadManager {
 
             log::info!(
                 "Download configured: {} segments, total_size={}, range=true",
-                num_segments, total_size
+                num_segments,
+                total_size
             );
         } else {
             task.num_segments = 1;
             let temp_dir = task.temp_dir();
             // For single downloads, segment covers the whole file
-            task.segments = vec![Segment::new(0, 0, total_size.saturating_sub(1).max(0), &temp_dir)];
-            
+            task.segments = vec![Segment::new(
+                0,
+                0,
+                total_size.saturating_sub(1).max(0),
+                &temp_dir,
+            )];
+
             log::info!(
                 "Download configured: single stream (no range), total_size={}",
                 total_size
@@ -297,14 +629,18 @@ impl DownloadManager {
 
         if visible {
             // Emit task added event
-            let _ = app_handle.emit("download-added", &task);
+            if let Some(app_handle) = &app_handle {
+                let _ = app_handle.emit("download-added", &task);
+            }
         } else {
             let mut hidden = self.hidden_tasks.write().await;
             hidden.insert(task.id.clone());
         }
 
-        // Try to start the download immediately
-        self.try_start_download(&task.id, app_handle).await?;
+        if auto_start {
+            // Try to start the download immediately
+            self.try_start_download(&task.id, app_handle).await?;
+        }
 
         Ok(task)
     }
@@ -313,7 +649,7 @@ impl DownloadManager {
     pub async fn reveal_download(
         &self,
         download_id: &str,
-        app_handle: AppHandle,
+        app_handle: Option<AppHandle>,
     ) -> Result<DownloadTask, String> {
         let task = {
             let tasks = self.tasks.read().await;
@@ -329,7 +665,9 @@ impl DownloadManager {
         }
 
         let task_snapshot = task.read().await.clone();
-        let _ = app_handle.emit("download-added", &task_snapshot);
+        if let Some(app_handle) = &app_handle {
+            let _ = app_handle.emit("download-added", &task_snapshot);
+        }
 
         let progress = ProgressEvent {
             download_id: task_snapshot.id.clone(),
@@ -352,7 +690,9 @@ impl DownloadManager {
                 })
                 .collect(),
         };
-        let _ = app_handle.emit("download-progress", &progress);
+        if let Some(app_handle) = &app_handle {
+            let _ = app_handle.emit("download-progress", &progress);
+        }
 
         Ok(task_snapshot)
     }
@@ -361,7 +701,7 @@ impl DownloadManager {
     async fn try_start_download(
         &self,
         download_id: &str,
-        app_handle: AppHandle,
+        app_handle: Option<AppHandle>,
     ) -> Result<(), String> {
         self.start_download(download_id, app_handle).await
     }
@@ -370,7 +710,7 @@ impl DownloadManager {
     pub async fn start_download(
         &self,
         download_id: &str,
-        app_handle: AppHandle,
+        app_handle: Option<AppHandle>,
     ) -> Result<(), String> {
         let task_arc = {
             let tasks = self.tasks.read().await;
@@ -411,6 +751,7 @@ impl DownloadManager {
         let speed_limits = self.speed_limits.clone();
         let active_count = self.active_count.clone();
         let hidden_tasks = self.hidden_tasks.clone();
+        let connection_semaphore = self.connection_semaphore.clone();
         let download_id = download_id.to_string();
         let app_handle_clone = app_handle.clone();
         let all_tasks = self.tasks.clone();
@@ -424,6 +765,7 @@ impl DownloadManager {
                 app_handle_clone.clone(),
                 limit_arc,
                 hidden_tasks,
+                connection_semaphore,
             )
             .await;
 
@@ -480,7 +822,9 @@ impl DownloadManager {
                         })
                         .collect(),
                 };
-                let _ = app_handle_clone.emit("download-progress", &progress);
+                if let Some(app_handle) = &app_handle_clone {
+                    let _ = app_handle.emit("download-progress", &progress);
+                }
             }
 
             // Clean up cancel token
@@ -508,7 +852,9 @@ impl DownloadManager {
                     let id_clone = id.clone();
                     drop(t);
                     drop(tasks);
-                    let _ = app_handle_clone.emit("check-queue", &id_clone);
+                    if let Some(app_handle) = &app_handle_clone {
+                        let _ = app_handle.emit("check-queue", &id_clone);
+                    }
                     break;
                 }
             }
@@ -522,10 +868,21 @@ impl DownloadManager {
         engine: Arc<DownloadEngine>,
         task_arc: Arc<RwLock<DownloadTask>>,
         cancel_token: Arc<Mutex<bool>>,
-        app_handle: AppHandle,
+        app_handle: Option<AppHandle>,
         task_speed_limit: Arc<RwLock<Option<u64>>>,
         hidden_tasks: Arc<RwLock<HashSet<String>>>,
+        connection_semaphore: Arc<Semaphore>,
     ) -> Result<(), String> {
+        if task_arc.read().await.download_kind == DownloadKind::Media {
+            return crate::media::download_media(
+                task_arc,
+                cancel_token,
+                app_handle,
+                task_speed_limit,
+            )
+            .await;
+        }
+
         let (url, supports_range, save_path, segments_data, total_size, ctx) = {
             let task = task_arc.read().await;
             (
@@ -543,6 +900,7 @@ impl DownloadManager {
             let task_for_cb = task_arc.clone();
             let app_for_cb = app_handle.clone();
             let dl_id = task_arc.read().await.id.clone();
+            let speed_limiter = Arc::new(crate::engine::SharedSpeedLimiter::new());
 
             // Callback now receives: (bytes_this_chunk, actual_total_size, speed)
             let callback = Arc::new(move |bytes: u64, actual_total: u64, speed: f64| {
@@ -553,12 +911,13 @@ impl DownloadManager {
                     let mut task = task_for_update.write().await;
                     task.downloaded += bytes;
                     task.speed_bps = speed;
-                    
+
                     // Update total_size if we now know it from the actual response
                     if actual_total > 0 && task.total_size != actual_total {
                         log::info!(
                             "Updating total_size from {} to {} (from actual response)",
-                            task.total_size, actual_total
+                            task.total_size,
+                            actual_total
                         );
                         task.total_size = actual_total;
                         // Update segment info too
@@ -598,13 +957,20 @@ impl DownloadManager {
                             })
                             .collect(),
                     };
-                    let _ = app.emit("download-progress", &progress);
+                    if let Some(app) = &app {
+                        let _ = app.emit("download-progress", &progress);
+                    }
                 });
             });
 
             let mut retries = 0;
-            let max_retries = 50;
+            let max_retries = MAX_DOWNLOAD_RETRIES;
             let actual_downloaded = loop {
+                let _connection_permit = connection_semaphore
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| "Connection limiter closed".to_string())?;
                 let res = DownloadEngine::download_single(
                     engine.client(),
                     url.clone(),
@@ -614,15 +980,19 @@ impl DownloadManager {
                     cancel_token.clone(),
                     callback.clone(),
                     task_speed_limit.clone(),
+                    speed_limiter.clone(),
                 )
                 .await;
+                drop(_connection_permit);
 
                 if res.is_ok() || *cancel_token.lock().await || retries >= max_retries {
                     break res;
                 }
 
                 if let Err(e) = &res {
-                    if e.contains("got HTML page instead of file") || e.contains("returned 200 instead of 206") {
+                    if e.contains("got HTML page instead of file")
+                        || e.contains("returned 200 instead of 206")
+                    {
                         break res; // Hard error, don't spam requests
                     }
                 }
@@ -630,7 +1000,13 @@ impl DownloadManager {
                 retries += 1;
                 // Exponential backoff, capped at 20 seconds. 1, 2, 4, 8, 16, 20...
                 let sleep_s = std::cmp::min(20, 2u64.pow(retries.min(6) as u32));
-                log::warn!("Single download failed ({:?}), retrying in {}s ({}/{})...", res.unwrap_err(), sleep_s, retries, max_retries);
+                log::warn!(
+                    "Single download failed ({:?}), retrying in {}s ({}/{})...",
+                    res.unwrap_err(),
+                    sleep_s,
+                    retries,
+                    max_retries
+                );
                 tokio::time::sleep(tokio::time::Duration::from_secs(sleep_s)).await;
             }?;
 
@@ -653,6 +1029,7 @@ impl DownloadManager {
                 .collect();
 
             let mut handles = Vec::new();
+            let speed_limiter = Arc::new(crate::engine::SharedSpeedLimiter::new());
 
             for seg_arc in &segment_arcs {
                 let client = engine.client();
@@ -679,11 +1056,11 @@ impl DownloadManager {
                             let seg = s.read().await;
                             total_speed += seg.speed_bps;
                             total_downloaded += seg.downloaded;
-                            
+
                             if i < task.segments.len() {
                                 task.segments[i] = seg.clone();
                             }
-                            
+
                             updated_segments.push(SegmentProgress {
                                 id: seg.id,
                                 downloaded: seg.downloaded,
@@ -694,10 +1071,10 @@ impl DownloadManager {
                             });
                         }
 
-                        // Re-sync global task downloaded with true sum of segments 
+                        // Re-sync global task downloaded with true sum of segments
                         // to prevent drift across resumes.
                         task.downloaded = total_downloaded;
-                        
+
                         task.speed_bps = total_speed;
                         if total_speed > 0.0 && task.total_size > 0 {
                             let remaining = task.total_size.saturating_sub(task.downloaded);
@@ -714,7 +1091,9 @@ impl DownloadManager {
                             speed_limit_bps: task.speed_limit_bps,
                             segments: updated_segments,
                         };
-                        let _ = app.emit("download-progress", &progress);
+                        if let Some(app) = &app {
+                            let _ = app.emit("download-progress", &progress);
+                        }
 
                         // Periodically save state
                         let _ = StateManager::save_state(&task).await;
@@ -722,26 +1101,41 @@ impl DownloadManager {
                 });
 
                 let limit_arc_for_seg = task_speed_limit.clone();
+                let speed_limiter_for_seg = speed_limiter.clone();
+                let connection_semaphore_for_seg = connection_semaphore.clone();
                 let handle = tokio::spawn(async move {
                     let mut retries = 0;
-                    let max_retries = 50;
+                    let max_retries = MAX_DOWNLOAD_RETRIES;
                     loop {
+                        let _connection_permit = match connection_semaphore_for_seg
+                            .clone()
+                            .acquire_owned()
+                            .await
+                        {
+                            Ok(permit) => permit,
+                            Err(_) => return Err("Connection limiter closed".to_string()),
+                        };
                         let res = DownloadEngine::download_segment(
-                            client.clone(), 
-                            url.clone(), 
-                            ctx.clone(), 
-                            seg.clone(), 
-                            token.clone(), 
-                            callback.clone(), 
-                            limit_arc_for_seg.clone()
-                        ).await;
+                            client.clone(),
+                            url.clone(),
+                            ctx.clone(),
+                            seg.clone(),
+                            token.clone(),
+                            callback.clone(),
+                            limit_arc_for_seg.clone(),
+                            speed_limiter_for_seg.clone(),
+                        )
+                        .await;
+                        drop(_connection_permit);
 
                         if res.is_ok() || *token.lock().await || retries >= max_retries {
                             return res;
                         }
 
                         if let Err(e) = &res {
-                            if e.contains("got HTML page instead of file") || e.contains("returned 200 instead of 206") {
+                            if e.contains("got HTML page instead of file")
+                                || e.contains("returned 200 instead of 206")
+                            {
                                 return res; // Hard error, retrying won't help expired links
                             }
                         }
@@ -749,7 +1143,14 @@ impl DownloadManager {
                         retries += 1;
                         let seg_id = seg.read().await.id;
                         let sleep_s = std::cmp::min(20, 2u64.pow(retries.min(6) as u32));
-                        log::warn!("Segment {} failed ({:?}), retrying in {}s ({}/{})...", seg_id, res.unwrap_err(), sleep_s, retries, max_retries);
+                        log::warn!(
+                            "Segment {} failed ({:?}), retrying in {}s ({}/{})...",
+                            seg_id,
+                            res.unwrap_err(),
+                            sleep_s,
+                            retries,
+                            max_retries
+                        );
                         tokio::time::sleep(tokio::time::Duration::from_secs(sleep_s)).await;
                     }
                 });
@@ -782,7 +1183,7 @@ impl DownloadManager {
                 task.status = DownloadStatus::Failed;
                 task.speed_bps = 0.0;
                 let _ = StateManager::save_state(&task).await;
-                
+
                 return Err(format!("Segment errors: {}", errors.join(", ")));
             }
 
@@ -815,19 +1216,21 @@ impl DownloadManager {
             {
                 let mut task = task_arc.write().await;
                 task.status = DownloadStatus::Assembling;
-                let _ = app_handle.emit(
-                    "download-progress",
-                    &ProgressEvent {
-                        download_id: task.id.clone(),
-                        total_size: task.total_size,
-                        downloaded: task.downloaded,
-                        speed_bps: 0.0,
-                        eta_seconds: 0.0,
-                        status: DownloadStatus::Assembling,
-                        speed_limit_bps: task.speed_limit_bps,
-                        segments: vec![],
-                    },
-                );
+                if let Some(app_handle) = &app_handle {
+                    let _ = app_handle.emit(
+                        "download-progress",
+                        &ProgressEvent {
+                            download_id: task.id.clone(),
+                            total_size: task.total_size,
+                            downloaded: task.downloaded,
+                            speed_bps: 0.0,
+                            eta_seconds: 0.0,
+                            status: DownloadStatus::Assembling,
+                            speed_limit_bps: task.speed_limit_bps,
+                            segments: vec![],
+                        },
+                    );
+                }
             }
 
             // Collect final segments
@@ -874,7 +1277,7 @@ impl DownloadManager {
     pub async fn resume_download(
         &self,
         download_id: &str,
-        app_handle: AppHandle,
+        app_handle: Option<AppHandle>,
     ) -> Result<(), String> {
         // Update status to queued and restart
         {
@@ -947,7 +1350,11 @@ impl DownloadManager {
     }
 
     /// Set personal speed limit for a specific task
-    pub async fn set_task_speed_limit(&self, download_id: &str, limit_bps: Option<u64>) -> Result<(), String> {
+    pub async fn set_task_speed_limit(
+        &self,
+        download_id: &str,
+        limit_bps: Option<u64>,
+    ) -> Result<(), String> {
         // Update task model
         {
             let tasks = self.tasks.read().await;

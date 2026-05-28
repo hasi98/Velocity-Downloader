@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Status of a download
@@ -23,6 +23,18 @@ pub enum SegmentStatus {
     Paused,
     Completed,
     Failed,
+}
+
+/// Download engine used for the task.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum DownloadKind {
+    Direct,
+    Media,
+}
+
+fn default_download_kind() -> DownloadKind {
+    DownloadKind::Direct
 }
 
 /// Represents a single download segment
@@ -78,8 +90,6 @@ pub struct HttpContext {
     pub user_agent: Option<String>,
 }
 
-
-
 /// Core download task metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadTask {
@@ -99,6 +109,10 @@ pub struct DownloadTask {
     pub updated_at: DateTime<Utc>,
     pub error: Option<String>,
     pub content_type: Option<String>,
+    #[serde(default = "default_download_kind")]
+    pub download_kind: DownloadKind,
+    #[serde(default)]
+    pub media_format: Option<String>,
     /// Browser context forwarded by the extension (cookies, referer, user-agent)
     pub http_context: HttpContext,
     /// Per-download speed limit in bytes per second
@@ -106,6 +120,14 @@ pub struct DownloadTask {
     /// Temporary directory override
     #[serde(default)]
     pub temp_dir_override: Option<String>,
+    #[serde(default)]
+    pub scheduled_queue: bool,
+    #[serde(default)]
+    pub batch_group_id: Option<String>,
+    #[serde(default)]
+    pub batch_sequential: bool,
+    #[serde(default)]
+    pub batch_queue_index: usize,
 }
 
 impl DownloadTask {
@@ -127,9 +149,15 @@ impl DownloadTask {
             updated_at: Utc::now(),
             error: None,
             content_type: None,
+            download_kind: DownloadKind::Direct,
+            media_format: None,
             http_context: HttpContext::default(),
             speed_limit_bps: None,
             temp_dir_override: None,
+            scheduled_queue: false,
+            batch_group_id: None,
+            batch_sequential: false,
+            batch_queue_index: 0,
         }
     }
 
@@ -149,7 +177,8 @@ impl DownloadTask {
                 .unwrap_or(std::path::Path::new("."))
                 .to_path_buf()
         };
-        parent.join(format!(".myidm_temp_{}", self.id))
+        parent
+            .join(format!(".myidm_temp_{}", self.id))
             .to_string_lossy()
             .to_string()
     }
@@ -158,7 +187,8 @@ impl DownloadTask {
         let parent = std::path::Path::new(&self.save_path)
             .parent()
             .unwrap_or(std::path::Path::new("."));
-        parent.join(format!(".{}.meta", self.filename))
+        parent
+            .join(format!(".{}.meta", self.filename))
             .to_string_lossy()
             .to_string()
     }

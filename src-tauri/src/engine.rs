@@ -2,12 +2,53 @@ use crate::models::*;
 use futures_util::StreamExt;
 use reqwest::Client;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
-use std::time::Instant;
 
 const MIN_SEGMENT_SIZE: u64 = 1 * 1024 * 1024; // 1 MB minimum per segment
+
+/// Shared per-download throttle. Multi-segment downloads must use one shared
+/// limiter so the configured speed is not multiplied by the connection count.
+pub struct SharedSpeedLimiter {
+    next_available: Mutex<Instant>,
+}
+
+impl SharedSpeedLimiter {
+    pub fn new() -> Self {
+        Self {
+            next_available: Mutex::new(Instant::now()),
+        }
+    }
+
+    pub async fn wait(&self, bytes: u64, task_speed_limit: &Arc<RwLock<Option<u64>>>) {
+        let Some(limit_bps) = *task_speed_limit.read().await else {
+            return;
+        };
+
+        if limit_bps == 0 || bytes == 0 {
+            return;
+        }
+
+        let now = Instant::now();
+        let delay = std::time::Duration::from_secs_f64(bytes as f64 / limit_bps as f64);
+        let sleep_for = {
+            let mut next_available = self.next_available.lock().await;
+            let base = if *next_available > now {
+                *next_available
+            } else {
+                now
+            };
+            *next_available = base + delay;
+            next_available.saturating_duration_since(now)
+        };
+
+        if !sleep_for.is_zero() {
+            tokio::time::sleep(sleep_for).await;
+        }
+    }
+}
 
 /// The core download engine
 pub struct DownloadEngine {
@@ -18,12 +59,30 @@ impl DownloadEngine {
     pub fn new() -> Self {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"));
-        headers.insert(reqwest::header::ACCEPT_LANGUAGE, reqwest::header::HeaderValue::from_static("en-US,en;q=0.5"));
-        headers.insert("Sec-Fetch-Dest", reqwest::header::HeaderValue::from_static("document"));
-        headers.insert("Sec-Fetch-Mode", reqwest::header::HeaderValue::from_static("navigate"));
-        headers.insert("Sec-Fetch-Site", reqwest::header::HeaderValue::from_static("none"));
-        headers.insert("Sec-Fetch-User", reqwest::header::HeaderValue::from_static("?1"));
-        headers.insert("Upgrade-Insecure-Requests", reqwest::header::HeaderValue::from_static("1"));
+        headers.insert(
+            reqwest::header::ACCEPT_LANGUAGE,
+            reqwest::header::HeaderValue::from_static("en-US,en;q=0.5"),
+        );
+        headers.insert(
+            "Sec-Fetch-Dest",
+            reqwest::header::HeaderValue::from_static("document"),
+        );
+        headers.insert(
+            "Sec-Fetch-Mode",
+            reqwest::header::HeaderValue::from_static("navigate"),
+        );
+        headers.insert(
+            "Sec-Fetch-Site",
+            reqwest::header::HeaderValue::from_static("none"),
+        );
+        headers.insert(
+            "Sec-Fetch-User",
+            reqwest::header::HeaderValue::from_static("?1"),
+        );
+        headers.insert(
+            "Upgrade-Insecure-Requests",
+            reqwest::header::HeaderValue::from_static("1"),
+        );
 
         // Build a client with cookie store and browser-like headers
         let client = Client::builder()
@@ -75,14 +134,18 @@ impl DownloadEngine {
     ) -> Result<reqwest::Response, String> {
         let mut current_url = url.to_string();
         for _ in 0..10 {
-            let parsed_url = reqwest::Url::parse(&current_url).map_err(|e| format!("Invalid URL {}: {}", current_url, e))?;
+            let parsed_url = reqwest::Url::parse(&current_url)
+                .map_err(|e| format!("Invalid URL {}: {}", current_url, e))?;
             let mut builder = client.request(method.clone(), parsed_url);
             builder = Self::apply_context(builder, ctx);
             if let Some(r) = range {
                 builder = builder.header("Range", r);
             }
-            let response = builder.send().await.map_err(|e| format!("Request failed: {}", e))?;
-            
+            let response = builder
+                .send()
+                .await
+                .map_err(|e| format!("Request failed: {}", e))?;
+
             if response.status().is_redirection() {
                 if let Some(loc) = response.headers().get("location") {
                     let loc_str = loc.to_str().unwrap_or_default();
@@ -107,18 +170,22 @@ impl DownloadEngine {
     /// Probe a URL to detect Range support and get file metadata.
     /// Strategy: Use GET with Range: bytes=0-0 instead of HEAD (more reliable).
     /// Falls back to HEAD if GET probe fails.
-    pub async fn probe_url(&self, url: &str, ctx: &HttpContext) -> Result<(u64, bool, Option<String>, String), String> {
+    pub async fn probe_url(
+        &self,
+        url: &str,
+        ctx: &HttpContext,
+    ) -> Result<(u64, bool, Option<String>, String), String> {
         // Strategy 1: GET with Range: bytes=0-0
         // This is far more reliable than HEAD for file hosts like GoFile, MediaFire, etc.
         let probe_result = self.probe_with_range_get(url, ctx).await;
-        
+
         if let Ok(result) = probe_result {
             return Ok(result);
         }
 
         // Strategy 2: Fallback to HEAD
         let head_result = self.probe_with_head(url, ctx).await;
-        
+
         if let Ok(result) = head_result {
             return Ok(result);
         }
@@ -126,7 +193,7 @@ impl DownloadEngine {
         // Strategy 3: Plain GET to at least get filename and content-type
         // (we won't know size or range support, but download can still proceed)
         let get_result = self.probe_with_get(url, ctx).await;
-        
+
         if let Ok(result) = get_result {
             return Ok(result);
         }
@@ -141,17 +208,29 @@ impl DownloadEngine {
 
     /// Probe using GET with Range: bytes=0-0
     /// This returns Content-Range: bytes 0-0/TOTAL_SIZE which gives us the real file size
-    async fn probe_with_range_get(&self, url: &str, ctx: &HttpContext) -> Result<(u64, bool, Option<String>, String), String> {
-        let response = Self::fetch_with_redirect(&self.client, url, reqwest::Method::GET, ctx, Some("bytes=0-0")).await?;
+    async fn probe_with_range_get(
+        &self,
+        url: &str,
+        ctx: &HttpContext,
+    ) -> Result<(u64, bool, Option<String>, String), String> {
+        let response = Self::fetch_with_redirect(
+            &self.client,
+            url,
+            reqwest::Method::GET,
+            ctx,
+            Some("bytes=0-0"),
+        )
+        .await?;
 
         let status = response.status().as_u16();
         let final_url = response.url().to_string();
-        
+
         // 206 = server supports Range! Parse Content-Range for total size
         if status == 206 {
             let total_size = Self::parse_content_range_total(response.headers())
                 .or_else(|| {
-                    response.headers()
+                    response
+                        .headers()
                         .get("content-length")
                         .and_then(|v| v.to_str().ok())
                         .and_then(|v| v.parse::<u64>().ok())
@@ -160,10 +239,11 @@ impl DownloadEngine {
 
             let content_type = Self::get_content_type(&response);
             let filename = Self::extract_filename(&response, &final_url);
-            
+
             log::info!(
                 "Range GET probe success: size={}, supports_range=true, filename={}",
-                total_size, filename
+                total_size,
+                filename
             );
 
             return Ok((total_size, total_size > 0, content_type, filename));
@@ -171,7 +251,8 @@ impl DownloadEngine {
 
         // 200 = server ignored Range header (doesn't support it or chunky stream)
         if status == 200 {
-            let content_length = response.headers()
+            let content_length = response
+                .headers()
                 .get("content-length")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok())
@@ -182,7 +263,8 @@ impl DownloadEngine {
 
             log::info!(
                 "Range GET probe: server returned 200 (no range support), size={}, filename={}",
-                content_length, filename
+                content_length,
+                filename
             );
 
             return Ok((content_length, false, content_type, filename));
@@ -192,8 +274,13 @@ impl DownloadEngine {
     }
 
     /// Probe using HEAD request (fallback)
-    async fn probe_with_head(&self, url: &str, ctx: &HttpContext) -> Result<(u64, bool, Option<String>, String), String> {
-        let response = Self::fetch_with_redirect(&self.client, url, reqwest::Method::HEAD, ctx, None).await?;
+    async fn probe_with_head(
+        &self,
+        url: &str,
+        ctx: &HttpContext,
+    ) -> Result<(u64, bool, Option<String>, String), String> {
+        let response =
+            Self::fetch_with_redirect(&self.client, url, reqwest::Method::HEAD, ctx, None).await?;
 
         if !response.status().is_success() {
             return Err(format!("HEAD returned status: {}", response.status()));
@@ -201,13 +288,15 @@ impl DownloadEngine {
 
         let final_url = response.url().to_string();
 
-        let content_length = response.headers()
+        let content_length = response
+            .headers()
             .get("content-length")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(0);
 
-        let accept_ranges = response.headers()
+        let accept_ranges = response
+            .headers()
             .get("accept-ranges")
             .and_then(|v| v.to_str().ok())
             .map(|v| v.to_lowercase())
@@ -219,15 +308,22 @@ impl DownloadEngine {
 
         log::info!(
             "HEAD probe: size={}, supports_range={}, filename={}",
-            content_length, supports_range, filename
+            content_length,
+            supports_range,
+            filename
         );
 
         Ok((content_length, supports_range, content_type, filename))
     }
 
     /// Probe using plain GET (last resort - just grab headers, abort body)
-    async fn probe_with_get(&self, url: &str, ctx: &HttpContext) -> Result<(u64, bool, Option<String>, String), String> {
-        let response = Self::fetch_with_redirect(&self.client, url, reqwest::Method::GET, ctx, None).await?;
+    async fn probe_with_get(
+        &self,
+        url: &str,
+        ctx: &HttpContext,
+    ) -> Result<(u64, bool, Option<String>, String), String> {
+        let response =
+            Self::fetch_with_redirect(&self.client, url, reqwest::Method::GET, ctx, None).await?;
 
         if !response.status().is_success() {
             return Err(format!("GET returned status: {}", response.status()));
@@ -235,7 +331,8 @@ impl DownloadEngine {
 
         let final_url = response.url().to_string();
 
-        let content_length = response.headers()
+        let content_length = response
+            .headers()
             .get("content-length")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok())
@@ -246,7 +343,8 @@ impl DownloadEngine {
 
         log::info!(
             "Plain GET probe: size={}, filename={}",
-            content_length, filename
+            content_length,
+            filename
         );
 
         // Don't download the body, just abort
@@ -270,7 +368,8 @@ impl DownloadEngine {
     }
 
     fn get_content_type(response: &reqwest::Response) -> Option<String> {
-        response.headers()
+        response
+            .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string())
@@ -280,35 +379,34 @@ impl DownloadEngine {
         // Try Content-Disposition header first
         if let Some(cd) = response.headers().get("content-disposition") {
             if let Ok(cd_str) = cd.to_str() {
-                if let Some(fname) = cd_str
-                    .split(';')
-                    .find_map(|part| {
-                        let trimmed = part.trim();
-                        if trimmed.starts_with("filename*=") {
-                            // RFC 5987 encoded filename (higher priority)
-                            let name = trimmed.splitn(2, '=').nth(1)?;
-                            // Handle UTF-8''filename format
-                            if let Some(utf8_name) = name.strip_prefix("UTF-8''")
-                                .or_else(|| name.strip_prefix("utf-8''")) {
-                                return Some(
-                                    urlencoding::decode(utf8_name)
-                                        .unwrap_or_else(|_| utf8_name.into())
-                                        .to_string(),
-                                );
-                            }
-                            Some(name.trim_matches('"').trim_matches('\'').to_string())
-                        } else if trimmed.starts_with("filename=") {
-                            let name = trimmed
-                                .splitn(2, '=')
-                                .nth(1)?
-                                .trim_matches('"')
-                                .trim_matches('\'');
-                            Some(name.to_string())
-                        } else {
-                            None
+                if let Some(fname) = cd_str.split(';').find_map(|part| {
+                    let trimmed = part.trim();
+                    if trimmed.starts_with("filename*=") {
+                        // RFC 5987 encoded filename (higher priority)
+                        let name = trimmed.splitn(2, '=').nth(1)?;
+                        // Handle UTF-8''filename format
+                        if let Some(utf8_name) = name
+                            .strip_prefix("UTF-8''")
+                            .or_else(|| name.strip_prefix("utf-8''"))
+                        {
+                            return Some(
+                                urlencoding::decode(utf8_name)
+                                    .unwrap_or_else(|_| utf8_name.into())
+                                    .to_string(),
+                            );
                         }
-                    })
-                {
+                        Some(name.trim_matches('"').trim_matches('\'').to_string())
+                    } else if trimmed.starts_with("filename=") {
+                        let name = trimmed
+                            .splitn(2, '=')
+                            .nth(1)?
+                            .trim_matches('"')
+                            .trim_matches('\'');
+                        Some(name.to_string())
+                    } else {
+                        None
+                    }
+                }) {
                     if !fname.is_empty() {
                         return fname;
                     }
@@ -318,14 +416,20 @@ impl DownloadEngine {
 
         // Fall back to URL path (use final URL after redirects)
         let final_url = response.url().as_str();
-        let url_to_parse = if !final_url.is_empty() { final_url } else { url };
-        
+        let url_to_parse = if !final_url.is_empty() {
+            final_url
+        } else {
+            url
+        };
+
         url::Url::parse(url_to_parse)
             .ok()
             .and_then(|u| {
-                u.path_segments()?
-                    .last()
-                    .map(|s| urlencoding::decode(s).unwrap_or_else(|_| s.into()).to_string())
+                u.path_segments()?.last().map(|s| {
+                    urlencoding::decode(s)
+                        .unwrap_or_else(|_| s.into())
+                        .to_string()
+                })
             })
             .filter(|s| !s.is_empty() && s != "/")
             .unwrap_or_else(|| "download".to_string())
@@ -369,6 +473,7 @@ impl DownloadEngine {
         cancel_token: Arc<Mutex<bool>>,
         progress_callback: Arc<dyn Fn(usize, u64, f64) + Send + Sync>,
         task_speed_limit: Arc<RwLock<Option<u64>>>,
+        speed_limiter: Arc<SharedSpeedLimiter>,
     ) -> Result<(), String> {
         let (start_byte, end_byte, already_downloaded, temp_file, seg_id) = {
             let seg = segment.read().await;
@@ -387,7 +492,12 @@ impl DownloadEngine {
         if already_downloaded >= expected_total {
             let mut seg = segment.write().await;
             seg.status = SegmentStatus::Completed;
-            log::info!("Segment {} already completed ({}/{})", seg_id, already_downloaded, expected_total);
+            log::info!(
+                "Segment {} already completed ({}/{})",
+                seg_id,
+                already_downloaded,
+                expected_total
+            );
             return Ok(());
         }
 
@@ -398,10 +508,11 @@ impl DownloadEngine {
 
         let range = format!("bytes={}-{}", start_byte, end_byte);
         log::info!("Segment {} requesting range: {}", seg_id, range);
-        
-        let response = Self::fetch_with_redirect(&client, &url, reqwest::Method::GET, &ctx, Some(&range))
-            .await
-            .map_err(|e| format!("Segment {} download failed: {}", seg_id, e))?;
+
+        let response =
+            Self::fetch_with_redirect(&client, &url, reqwest::Method::GET, &ctx, Some(&range))
+                .await
+                .map_err(|e| format!("Segment {} download failed: {}", seg_id, e))?;
 
         let status = response.status().as_u16();
 
@@ -412,7 +523,10 @@ impl DownloadEngine {
         } else if status == 200 {
             // Server ignored Range header and is sending the full file
             // This is a problem for multi-segment downloads
-            log::warn!("Segment {} got 200 instead of 206 - server ignoring Range header!", seg_id);
+            log::warn!(
+                "Segment {} got 200 instead of 206 - server ignoring Range header!",
+                seg_id
+            );
             let mut seg = segment.write().await;
             seg.status = SegmentStatus::Failed;
             return Err(format!(
@@ -420,7 +534,11 @@ impl DownloadEngine {
             ));
         } else if !response.status().is_success() {
             let body_preview = response.text().await.unwrap_or_default();
-            let preview = if body_preview.len() > 200 { &body_preview[..200] } else { &body_preview };
+            let preview = if body_preview.len() > 200 {
+                &body_preview[..200]
+            } else {
+                &body_preview
+            };
             let mut seg = segment.write().await;
             seg.status = SegmentStatus::Failed;
             return Err(format!(
@@ -440,34 +558,42 @@ impl DownloadEngine {
         if response_content_type.contains("text/html") {
             log::error!(
                 "Segment {} server returned text/html for URL {} — Content-Type: {}",
-                seg_id, url, response_content_type
+                seg_id,
+                url,
+                response_content_type
             );
             let mut seg = segment.write().await;
             seg.status = SegmentStatus::Failed;
             return Err(
-                "Failed: got HTML page instead of file, possible session or cookie issue".to_string(),
+                "Failed: got HTML page instead of file, possible session or cookie issue"
+                    .to_string(),
             );
         }
 
         // Verify the Content-Length of the response matches expected segment size
-        let response_content_length = response.headers()
+        let response_content_length = response
+            .headers()
             .get("content-length")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
-        
+
         let expected_segment_size = end_byte - start_byte + 1;
         if let Some(rcl) = response_content_length {
             if rcl != expected_segment_size && status == 206 {
                 log::warn!(
                     "Segment {} content-length mismatch: got {} expected {}",
-                    seg_id, rcl, expected_segment_size
+                    seg_id,
+                    rcl,
+                    expected_segment_size
                 );
             }
         }
 
         // Create temp directory if needed
         if let Some(parent) = std::path::Path::new(&temp_file).parent() {
-            fs::create_dir_all(parent).await.map_err(|e| format!("Failed to create temp dir: {}", e))?;
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create temp dir: {}", e))?;
         }
 
         let mut file = tokio::fs::OpenOptions::new()
@@ -493,14 +619,18 @@ impl DownloadEngine {
 
             // Secondary stall detector: if 15s passed since last REAL data, force-kill
             if last_real_data.elapsed().as_secs() >= 15 {
-                log::warn!("Segment {} stalled: no real data for 15 seconds, forcing reconnect", seg_id);
+                log::warn!(
+                    "Segment {} stalled: no real data for 15 seconds, forcing reconnect",
+                    seg_id
+                );
                 let mut seg = segment.write().await;
                 seg.status = SegmentStatus::Failed;
                 return Err(format!("Segment {} stalled (no data for 15s)", seg_id));
             }
 
-            let chunk_or_timeout = tokio::time::timeout(std::time::Duration::from_secs(10), stream.next()).await;
-            
+            let chunk_or_timeout =
+                tokio::time::timeout(std::time::Duration::from_secs(10), stream.next()).await;
+
             let chunk_result = match chunk_or_timeout {
                 Ok(Some(res)) => res,
                 Ok(None) => break, // Stream completed successfully
@@ -519,7 +649,7 @@ impl DownloadEngine {
             if chunk_len == 0 {
                 continue;
             }
-            
+
             last_real_data = Instant::now(); // Got real data, reset stall timer
 
             file.write_all(&chunk)
@@ -533,6 +663,8 @@ impl DownloadEngine {
                 let mut seg = segment.write().await;
                 seg.downloaded += chunk_len;
             }
+
+            speed_limiter.wait(chunk_len, &task_speed_limit).await;
 
             // Calculate speed every 500ms for UI using EWMA to prevent jitter
             let elapsed = last_speed_calc.elapsed();
@@ -552,34 +684,32 @@ impl DownloadEngine {
                 bytes_since_calc = 0;
                 last_speed_calc = Instant::now();
             }
-
-            // --- Speed Limiting ---
-            let limit = *task_speed_limit.read().await;
-            if let Some(limit_bps) = limit {
-                if limit_bps > 0 {
-                    let expected_time_s = chunk_len as f64 / limit_bps as f64;
-                    let expected_time_d = std::time::Duration::from_secs_f64(expected_time_s);
-                    tokio::time::sleep(expected_time_d).await;
-                }
-            }
         }
 
         // Final flush
-        file.flush().await.map_err(|e| format!("Flush error: {}", e))?;
+        file.flush()
+            .await
+            .map_err(|e| format!("Flush error: {}", e))?;
 
         if total_received < expected_segment_size {
             log::warn!(
                 "Segment {} connection dropped prematurely! Received {}/{}",
-                seg_id, total_received, expected_segment_size
+                seg_id,
+                total_received,
+                expected_segment_size
             );
             let mut seg = segment.write().await;
             seg.status = SegmentStatus::Failed;
-            return Err(format!("Premature EOF ({} of {} bytes)", total_received, expected_segment_size));
+            return Err(format!(
+                "Premature EOF ({} of {} bytes)",
+                total_received, expected_segment_size
+            ));
         }
 
         log::info!(
             "Segment {} completed normally: received {} bytes",
-            seg_id, total_received
+            seg_id,
+            total_received
         );
 
         {
@@ -597,15 +727,18 @@ impl DownloadEngine {
     }
 
     /// Assemble segments into the final file
-    pub async fn assemble_file(
-        segments: &[Segment],
-        output_path: &str,
-    ) -> Result<(), String> {
-        log::info!("Assembling {} segments into {}", segments.len(), output_path);
+    pub async fn assemble_file(segments: &[Segment], output_path: &str) -> Result<(), String> {
+        log::info!(
+            "Assembling {} segments into {}",
+            segments.len(),
+            output_path
+        );
 
         // Ensure parent directory exists
         if let Some(parent) = std::path::Path::new(output_path).parent() {
-            fs::create_dir_all(parent).await.map_err(|e| format!("Failed to create output dir: {}", e))?;
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create output dir: {}", e))?;
         }
 
         let mut output_file = tokio::fs::File::create(output_path)
@@ -615,18 +748,24 @@ impl DownloadEngine {
         let mut total_assembled: u64 = 0;
         for segment in segments {
             let part_path = &segment.temp_file;
-            
+
             // Verify segment file exists
             if !std::path::Path::new(part_path).exists() {
-                return Err(format!("Segment {} temp file missing: {}", segment.id, part_path));
+                return Err(format!(
+                    "Segment {} temp file missing: {}",
+                    segment.id, part_path
+                ));
             }
 
-            let part_meta = tokio::fs::metadata(part_path).await
+            let part_meta = tokio::fs::metadata(part_path)
+                .await
                 .map_err(|e| format!("Failed to read segment {} metadata: {}", segment.id, e))?;
-            
+
             log::info!(
                 "Assembling segment {}: {} bytes from {}",
-                segment.id, part_meta.len(), part_path
+                segment.id,
+                part_meta.len(),
+                part_path
             );
 
             let mut part_file = tokio::fs::File::open(part_path)
@@ -636,7 +775,7 @@ impl DownloadEngine {
             let copied = tokio::io::copy(&mut part_file, &mut output_file)
                 .await
                 .map_err(|e| format!("Failed to copy segment {}: {}", segment.id, e))?;
-            
+
             total_assembled += copied;
         }
 
@@ -645,7 +784,11 @@ impl DownloadEngine {
             .await
             .map_err(|e| format!("Failed to flush output: {}", e))?;
 
-        log::info!("Assembly complete: {} total bytes written to {}", total_assembled, output_path);
+        log::info!(
+            "Assembly complete: {} total bytes written to {}",
+            total_assembled,
+            output_path
+        );
 
         Ok(())
     }
@@ -671,6 +814,7 @@ impl DownloadEngine {
         cancel_token: Arc<Mutex<bool>>,
         progress_callback: Arc<dyn Fn(u64, u64, f64) + Send + Sync>,
         task_speed_limit: Arc<RwLock<Option<u64>>>,
+        speed_limiter: Arc<SharedSpeedLimiter>,
     ) -> Result<u64, String> {
         let response = Self::fetch_with_redirect(&client, &url, reqwest::Method::GET, &ctx, None)
             .await
@@ -679,7 +823,11 @@ impl DownloadEngine {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            let preview = if body.len() > 500 { &body[..500] } else { &body };
+            let preview = if body.len() > 500 {
+                &body[..500]
+            } else {
+                &body
+            };
             return Err(format!("Server returned status {}: {}", status, preview));
         }
 
@@ -699,12 +847,14 @@ impl DownloadEngine {
                 response_content_type
             );
             return Err(
-                "Failed: got HTML page instead of file, possible session or cookie issue".to_string(),
+                "Failed: got HTML page instead of file, possible session or cookie issue"
+                    .to_string(),
             );
         }
 
         // Get the actual content-length from the response
-        let actual_size = response.headers()
+        let actual_size = response
+            .headers()
             .get("content-length")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok())
@@ -712,15 +862,21 @@ impl DownloadEngine {
 
         log::info!(
             "Single download: status={}, content-length={}, hint was={}, content-type={}",
-            status, actual_size, total_size_hint, response_content_type
+            status,
+            actual_size,
+            total_size_hint,
+            response_content_type
         );
 
         // Create parent directories if needed
         if let Some(parent) = std::path::Path::new(&output_path).parent() {
-            fs::create_dir_all(parent).await.map_err(|e| format!("Failed to create dir: {}", e))?;
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create dir: {}", e))?;
         }
 
-        let mut file = tokio::fs::File::create(&output_path)
+        let temp_output_path = format!("{}.part", output_path);
+        let mut file = tokio::fs::File::create(&temp_output_path)
             .await
             .map_err(|e| format!("Failed to create file: {}", e))?;
 
@@ -743,7 +899,8 @@ impl DownloadEngine {
                 return Err("Stalled (no data for 15s)".to_string());
             }
 
-            let chunk_or_timeout = tokio::time::timeout(std::time::Duration::from_secs(10), stream.next()).await;
+            let chunk_or_timeout =
+                tokio::time::timeout(std::time::Duration::from_secs(10), stream.next()).await;
 
             let chunk_result = match chunk_or_timeout {
                 Ok(Some(res)) => res,
@@ -771,6 +928,8 @@ impl DownloadEngine {
             bytes_since_calc += chunk_len;
             total_downloaded += chunk_len;
 
+            speed_limiter.wait(chunk_len, &task_speed_limit).await;
+
             let elapsed = last_speed_calc.elapsed();
             if elapsed.as_millis() >= 500 {
                 let raw_speed = bytes_since_calc as f64 / elapsed.as_secs_f64();
@@ -779,36 +938,53 @@ impl DownloadEngine {
                 } else {
                     current_speed = (raw_speed * 0.3) + (current_speed * 0.7);
                 }
-                
-                progress_callback(bytes_since_calc, actual_size.max(total_downloaded), current_speed);
-                
+
+                progress_callback(
+                    bytes_since_calc,
+                    actual_size.max(total_downloaded),
+                    current_speed,
+                );
+
                 bytes_since_calc = 0;
                 last_speed_calc = Instant::now();
             }
-
-            // --- Speed Limiting ---
-            let limit = *task_speed_limit.read().await;
-            if let Some(limit_bps) = limit {
-                if limit_bps > 0 {
-                    let expected_time_s = chunk_len as f64 / limit_bps as f64;
-                    let expected_time_d = std::time::Duration::from_secs_f64(expected_time_s);
-                    tokio::time::sleep(expected_time_d).await;
-                }
-            }
         }
 
-        file.flush().await.map_err(|e| format!("Flush error: {}", e))?;
+        file.flush()
+            .await
+            .map_err(|e| format!("Flush error: {}", e))?;
 
         if bytes_since_calc > 0 {
             progress_callback(bytes_since_calc, actual_size.max(total_downloaded), 0.0);
         }
 
         if actual_size > 0 && total_downloaded < actual_size {
-            log::warn!("Single download dropped prematurely: {}/{}", total_downloaded, actual_size);
-            return Err(format!("Premature EOF ({} of {} bytes)", total_downloaded, actual_size));
+            log::warn!(
+                "Single download dropped prematurely: {}/{}",
+                total_downloaded,
+                actual_size
+            );
+            return Err(format!(
+                "Premature EOF ({} of {} bytes)",
+                total_downloaded, actual_size
+            ));
         }
 
-        log::info!("Single download complete: {} bytes written to {}", total_downloaded, output_path);
+        if std::path::Path::new(&output_path).exists() {
+            fs::remove_file(&output_path)
+                .await
+                .map_err(|e| format!("Failed to replace existing file: {}", e))?;
+        }
+
+        fs::rename(&temp_output_path, &output_path)
+            .await
+            .map_err(|e| format!("Failed to move completed download into place: {}", e))?;
+
+        log::info!(
+            "Single download complete: {} bytes written to {}",
+            total_downloaded,
+            output_path
+        );
 
         Ok(total_downloaded)
     }

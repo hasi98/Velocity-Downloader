@@ -1,18 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Velocity Downloader",
-  "version": "0.2.1",
+  "productName": "Velocity Download Manager",
+  "version": "2.0.0",
   "identifier": "com.velocitydownloader.app",
-  "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
-  },
+  "build": {},
   "app": {
     "windows": [
       {
-        "title": "Velocity Downloader",
+        "title": "Velocity Download Manager",
         "width": 980,
         "height": 620,
         "minWidth": 760,
@@ -29,9 +24,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "createUpdaterArtifacts": true,
+    "publisher": "Backend Tech inc",
+    "createUpdaterArtifacts": false,
     "resources": {
-      "../extension": "extension"
+      "../extension": "extension",
+      "../bin/yt-dlp.exe": "bin/yt-dlp.exe",
+      "icons": "icons"
     },
     "icon": [
       "icons/32x32.png",
@@ -43,17 +41,6 @@
     "windows": {
       "nsis": {
         "installerHooks": "nsis/hooks.nsh"
-      }
-    }
-  },
-  "plugins": {
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRERDZENTlBRUFERjhCRTEKUldUaGk5L3FtdFhXVGQrRVRLcVpVbDl0T082VGJIS0hxSm8zNnc2b0dGb01UY284QUYzV3JhWHYK",
-      "endpoints": [
-        "https://github.com/hasi98/Velocity-Downloader/releases/latest/download/latest.json"
-      ],
-      "windows": {
-        "installMode": "passive"
       }
     }
   }

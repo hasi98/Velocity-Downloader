@@ -42,14 +42,44 @@ async function getCookieString(url) {
     }
 }
 
+function isLikelyMediaPageUrl(url) {
+    try {
+        const parsed = new URL(url);
+        const host = parsed.hostname.toLowerCase();
+        const path = parsed.pathname.toLowerCase();
+        if (path.endsWith(".m3u8") || path.endsWith(".mpd")) return true;
+
+        return [
+            "youtube.com",
+            "youtu.be",
+            "vimeo.com",
+            "dailymotion.com",
+            "tiktok.com",
+            "instagram.com",
+            "facebook.com",
+            "fb.watch",
+            "x.com",
+            "twitter.com",
+            "twitch.tv",
+            "soundcloud.com",
+            "reddit.com",
+            "streamable.com",
+            "bilibili.com",
+        ].some((domain) => host === domain || host.endsWith(`.${domain}`));
+    } catch {
+        return false;
+    }
+}
+
 async function sendUrlToVelocity(url, referer = "") {
     await checkConnection();
     if (!isConnected) {
-        throw new Error("Velocity Downloader is not running");
+        throw new Error("Velocity Download Manager is not running");
     }
 
-    const cookieStr = await getCookieString(url);
-    const userAgent = navigator.userAgent;
+    const isMediaPage = isLikelyMediaPageUrl(url);
+    const cookieStr = isMediaPage ? "" : await getCookieString(url);
+    const userAgent = isMediaPage ? "" : navigator.userAgent;
 
     const res = await fetch(`${LOCAL_API}/add_download`, {
         method: "POST",
@@ -59,8 +89,9 @@ async function sendUrlToVelocity(url, referer = "") {
         body: JSON.stringify({
             url,
             cookies: cookieStr || null,
-            referer: referer || null,
+            referer: isMediaPage ? null : (referer || null),
             user_agent: userAgent || null,
+            source: "extension",
         })
     });
 
@@ -141,7 +172,7 @@ function isLocalOrPrivateHost(hostname) {
 chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.create({
         id: "download-with-velocity",
-        title: "Download with Velocity",
+        title: "Download with VDM",
         contexts: ["link", "image", "video", "audio"]
     });
 });
@@ -166,12 +197,6 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
         return;
     }
 
-    // Prevent infinite loops if our app initiates downloads that Chrome sees
-    if (!isConnected) {
-        console.log("Not connected to Velocity Downloader, allowing Chrome to download.");
-        return;
-    }
-
     // Check if the site is excluded
     let domain = "";
     try {
@@ -186,7 +211,7 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
     }
 
     if (isLocalOrPrivateHost(domain)) {
-        console.log("Local/private download URL ignored by Velocity:", targetUrl);
+        console.log("Local/private download URL ignored by VDM:", targetUrl);
         return;
     }
 
@@ -197,14 +222,14 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
 
     const referer = downloadItem.referrer || "";
     cancelBrowserDownload(downloadItem.id);
-    console.log("Canceled browser download and sending to Velocity Downloader:", targetUrl);
+    console.log("Canceled browser download and sending to Velocity Download Manager:", targetUrl);
 
     sendUrlToVelocity(targetUrl, referer)
         .then(() => {
-            console.log("Successfully sent to Velocity Downloader!");
+            console.log("Successfully sent to Velocity Download Manager!");
         })
         .catch((e) => {
-            console.error("Failed to send download to Velocity Downloader", e);
+            console.error("Failed to send download to Velocity Download Manager", e);
             restoreBrowserDownload(targetUrl);
         });
 });
@@ -232,7 +257,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         chrome.storage.local.set({ excludedSites: excludedSites }, () => {
             console.log("Exclusion list saved:", excludedSites);
-            sendResponse({ success: true, excluded: excludedSites.includes(domain) });
+            sendResponse({ success: true, excluded: excludedSites.includes(domain), excludedSites });
         });
         return true;
     }
@@ -241,7 +266,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         checkConnection().then(() => {
             if (!isConnected) {
                 console.log("Not connected to app. Cannot download media.");
-                sendResponse({ success: false, error: "Not connected to Velocity Downloader App" });
+                sendResponse({ success: false, error: "Not connected to Velocity Download Manager" });
                 return;
             }
 
@@ -249,10 +274,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             const referer = message.referer || "";
 
             sendUrlToVelocity(mediaUrl, referer).then(() => {
-                console.log("Successfully sent media URL to Velocity Downloader!");
+                console.log("Successfully sent media URL to Velocity Download Manager!");
                 sendResponse({ success: true });
             }).catch(err => {
-                console.error("Failed to send video download to Velocity Downloader", err);
+                console.error("Failed to send video download to Velocity Download Manager", err);
                 sendResponse({ success: false, error: err.toString() });
             });
         });

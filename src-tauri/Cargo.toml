@@ -1,19 +1,22 @@
 [package]
 name = "velocity-downloader"
-version = "0.2.1"
+version = "2.0.0"
 description = "A high-performance multi-threaded download manager"
-authors = ["you"]
+authors = ["Backend Tech inc"]
 edition = "2021"
+default-run = "velocity-native"
 
-[lib]
-name = "velocity_downloader_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+[[bin]]
+name = "velocity-native"
+path = "src/native_main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+slint-build = "1.16.1"
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
+slint = { version = "1.16.1", features = ["unstable-winit-030", "raw-window-handle-06"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -22,6 +25,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["stream", "cookies"] }
 futures-util = "0.3"
+sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 url = "2"
@@ -29,6 +33,9 @@ log = "0.4"
 env_logger = "0.11"
 dirs = "6"
 urlencoding = "2"
+arboard = "3.6"
+rfd = "0.15"
+ico = "0.5"
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
 tauri-plugin-autostart = "2"
@@ -37,6 +44,8 @@ tauri-plugin-process = "2.3.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"
+raw-window-handle = "0.6"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell"] }
 
 [profile.release]
 opt-level = 3

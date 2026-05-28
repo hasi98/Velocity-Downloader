@@ -4,69 +4,81 @@
 <head>
     <style>
         body {
-            width: 200px;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            padding: 15px;
-            text-align: center;
-            background: #0a0e1a;
-            color: #f1f5f9;
+            width: 220px;
+            margin: 0;
+            padding: 14px;
+            font-family: "Segoe UI", Arial, sans-serif;
+            background: #1b1d1f;
+            color: #e7edf2;
         }
 
         h2 {
-            margin: 0 0 10px 0;
-            font-size: 16px;
-            color: #818cf8;
+            margin: 0 0 4px 0;
+            font-size: 15px;
+            font-weight: 600;
         }
 
         p {
+            margin: 0 0 14px 0;
             font-size: 12px;
-            color: #94a3b8;
-            margin-bottom: 20px;
+            color: #aeb8c2;
         }
 
         .btn {
-            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 6px;
+            width: 100%;
+            min-height: 30px;
+            border: 1px solid #3f464c;
+            border-radius: 4px;
+            background: #26282b;
+            color: #ffffff;
             cursor: pointer;
             font-size: 12px;
-            font-weight: bold;
-            width: 100%;
         }
 
         .btn:hover {
-            opacity: 0.9;
+            background: #30343a;
         }
 
         #status {
             margin-top: 10px;
             font-size: 12px;
-            font-weight: bold;
+            font-weight: 600;
         }
 
         .connected {
-            color: #10b981;
+            color: #36c275;
         }
 
         .disconnected {
-            color: #ef4444;
+            color: #ff7272;
+        }
+
+        .site-box {
+            margin-top: 14px;
+            border-top: 1px solid #333940;
+            padding-top: 12px;
+        }
+
+        #currentSite {
+            font-size: 11px;
+            margin-bottom: 8px;
+            color: #aeb8c2;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
     </style>
 </head>
 
 <body>
-    <h2>⚡ Velocity</h2>
-    <p>Interceptor Extension 🚀</p>
+    <h2>Velocity Download Manager</h2>
+    <p>Browser integration</p>
     <button class="btn" id="checkBtn">Check Connection</button>
-    <div id="status" class="disconnected">🔌 Not Connected</div>
+    <div id="status" class="disconnected">Not connected</div>
 
-    <div style="margin-top: 15px; border-top: 1px solid #1e293b; padding-top: 15px;">
-        <div id="currentSite"
-            style="font-size: 11px; margin-bottom: 8px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-            -</div>
-        <button class="btn" id="excludeBtn" style="background: #1e293b;">Exclude Site</button>
+    <div class="site-box">
+        <div id="currentSite">-</div>
+        <button class="btn" id="excludeBtn">Disable on this site</button>
     </div>
 
     <script src="popup.js"></script>

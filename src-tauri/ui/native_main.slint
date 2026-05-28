@@ -1,0 +1,3197 @@
+import { Button, LineEdit, ScrollView, TextEdit } from "std-widgets.slint";
+
+global AppAssets {
+    out property <image> icon: @image-url("../icons/32x32.png");
+}
+
+export struct DownloadRow {
+    id: string,
+    filename: string,
+    size: string,
+    status: string,
+    time_left: string,
+    rate: string,
+    category: string,
+    progress: float,
+    stripe: bool,
+    selected: bool,
+}
+
+export struct SegmentRow {
+    number: string,
+    downloaded: string,
+    status: string,
+    progress: float,
+}
+
+export struct QualityOption {
+    id: string,
+    label: string,
+    size: string,
+    size_bytes: string,
+}
+
+export struct BatchQueueRow {
+    index: string,
+    url: string,
+    status: string,
+    progress: float,
+    error: string,
+    active: bool,
+}
+
+component MenuItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    in property <bool> hot-tracking;
+    in property <length> item-width: 64px;
+    callback clicked(string);
+    callback hovered(string);
+
+    width: root.item-width;
+    height: 27px;
+    background: selected ? #343434 : touch.has-hover ? #2f2f2f : transparent;
+
+    Text {
+        text: root.label;
+        color: #ffffff;
+        font-size: 12px;
+        x: 7px;
+        width: root.width - 14px;
+        height: root.height;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(root.label); }
+        moved => {
+            if root.hot-tracking {
+                root.hovered(root.label);
+            }
+        }
+        pointer-event(event) => {
+            if root.hot-tracking && event.kind == PointerEventKind.move {
+                root.hovered(root.label);
+            }
+        }
+    }
+}
+
+component DropdownItem inherits Rectangle {
+    in property <string> label;
+    in property <string> action;
+    in property <bool> enabled: true;
+    callback clicked(string);
+
+    height: 28px;
+    background: root.enabled && touch.has-hover ? #094771 : #252526;
+    border-width: 0px;
+
+    Text {
+        text: root.label;
+        color: root.enabled ? (touch.has-hover ? #ffffff : #cccccc) : #555555;
+        font-size: 13px;
+        x: 12px;
+        width: root.width - 24px;
+        height: root.height;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(root.action); }
+    }
+}
+
+component DropdownSeparator inherits Rectangle {
+    height: 1px;
+    background: #3a3a3a;
+}
+
+component MenuDropdown inherits Rectangle {
+    in property <string> menu;
+    in property <bool> categories-visible: true;
+    callback action(string);
+
+    width: 206px;
+    background: #252526;
+    border-width: 2px;
+    border-color: #ffffff;
+
+    if root.menu == "Tasks": VerticalLayout {
+        spacing: 0px;
+        DropdownItem { label: "Add new download"; action: "add-download"; clicked(action) => { root.action(action); } }
+        DropdownItem { label: "Add batch download"; action: "add-batch"; clicked(action) => { root.action(action); } }
+        DropdownItem { label: "Exit"; action: "exit"; clicked(action) => { root.action(action); } }
+    }
+
+    if root.menu == "File": VerticalLayout {
+        spacing: 0px;
+        DropdownItem { label: "Resume Download"; action: "resume"; clicked(action) => { root.action(action); } }
+        DropdownItem { label: "Stop download"; action: "stop"; clicked(action) => { root.action(action); } }
+        DropdownSeparator { }
+        DropdownItem { label: "Redownload"; action: "redownload"; clicked(action) => { root.action(action); } }
+        DropdownItem { label: "Download now"; action: "download-now"; clicked(action) => { root.action(action); } }
+    }
+
+    if root.menu == "Downloads": VerticalLayout {
+        spacing: 0px;
+        DropdownItem { label: "Delete all completed"; action: "delete-completed"; clicked(action) => { root.action(action); } }
+        DropdownItem { label: "Find"; action: "find"; clicked(action) => { root.action(action); } }
+        DropdownItem { label: "Speed limiter"; action: "speed-limiter"; clicked(action) => { root.action(action); } }
+    }
+
+    if root.menu == "View": VerticalLayout {
+        spacing: 0px;
+        DropdownItem { label: root.categories-visible ? "Hide categories" : "View categories"; action: "toggle-categories"; clicked(action) => { root.action(action); } }
+        DropdownSeparator { }
+        DropdownItem { label: "Arrange by date"; action: "arrange-date"; clicked(action) => { root.action(action); } }
+        DropdownItem { label: "Arrange by last updated"; action: "arrange-updated"; clicked(action) => { root.action(action); } }
+        DropdownItem { label: "Arrange by file name"; action: "arrange-name"; clicked(action) => { root.action(action); } }
+        DropdownItem { label: "Arrange by size"; action: "arrange-size"; clicked(action) => { root.action(action); } }
+        DropdownItem { label: "Arrange by status"; action: "arrange-status"; clicked(action) => { root.action(action); } }
+    }
+
+    if root.menu == "Help": VerticalLayout {
+        spacing: 0px;
+        DropdownItem { label: "Check for updates"; action: "check-updates"; clicked(action) => { root.action(action); } }
+        DropdownItem { label: "About"; action: "about"; clicked(action) => { root.action(action); } }
+        DropdownItem { label: "Homepage"; action: "homepage"; clicked(action) => { root.action(action); } }
+        DropdownItem { label: "Support"; action: "support"; clicked(action) => { root.action(action); } }
+    }
+}
+
+component ContextActionItem inherits Rectangle {
+    in property <string> label;
+    in property <string> action;
+    in property <bool> enabled: true;
+    in property <bool> has-sub-menu: false;
+    callback selected(string);
+
+    height: 28px;
+    background: enabled && touch.has-hover ? #e8f0fe : #ffffff;
+
+    Text {
+        text: root.label;
+        color: root.enabled ? #111111 : #777777;
+        font-size: 13px;
+        x: 12px;
+        width: root.width - (root.has-sub-menu ? 28px : 20px);
+        height: root.height;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    if root.has-sub-menu: Text {
+        text: "\u{E974}";
+        font-family: "Segoe MDL2 Assets";
+        color: #111111;
+        font-size: 11px;
+        x: root.width - 20px;
+        width: 12px;
+        height: root.height;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.selected(root.action); }
+    }
+}
+
+component ContextSeparator inherits Rectangle {
+    height: 1px;
+    background: #d0d0d0;
+}
+
+component DownloadContextMenu inherits Rectangle {
+    in property <string> status;
+    callback selected(string);
+
+    width: 220px;
+    height: 379px;
+    background: #ffffff;
+    border-width: 2px;
+    border-color: #b8b8b8;
+    border-radius: 3px;
+
+    VerticalLayout {
+        padding-top: 5px;
+        padding-bottom: 5px;
+        spacing: 0px;
+
+        ContextActionItem { label: "Open"; action: "open"; enabled: root.status == "Complete"; selected(action) => { root.selected(action); } }
+        ContextActionItem { label: "Open with..."; action: "open-with"; enabled: false; selected(action) => { root.selected(action); } }
+        ContextActionItem { label: "Open folder"; action: "open-folder"; selected(action) => { root.selected(action); } }
+        ContextActionItem { label: "Show download window"; action: "show-download-window"; selected(action) => { root.selected(action); } }
+        ContextSeparator { }
+        ContextActionItem { label: "Move/Rename (Ctrl-M)"; action: "move-rename"; enabled: false; selected(action) => { root.selected(action); } }
+        ContextSeparator { }
+        ContextActionItem { label: "Redownload"; action: "redownload"; selected(action) => { root.selected(action); } }
+        ContextActionItem { label: "Resume Download"; action: "resume"; enabled: root.status == "Paused" || root.status == "Failed" || root.status == "Queued"; selected(action) => { root.selected(action); } }
+        ContextActionItem { label: "Stop Download"; action: "stop"; enabled: root.status != "Complete" && root.status != "Paused"; selected(action) => { root.selected(action); } }
+        ContextSeparator { }
+        ContextActionItem { label: "Refresh download address"; action: "refresh-address"; selected(action) => { root.selected(action); } }
+        ContextActionItem { label: "Remove"; action: "remove"; selected(action) => { root.selected(action); } }
+        ContextSeparator { }
+        ContextActionItem { label: "Move to queue"; action: "move-queue"; enabled: true; has-sub-menu: true; selected(action) => { root.selected(action); } }
+        ContextActionItem { label: "Delete from queue"; action: "delete-queue"; enabled: false; selected(action) => { root.selected(action); } }
+        ContextSeparator { }
+        ContextActionItem { label: "Properties"; action: "properties"; selected(action) => { root.selected(action); } }
+    }
+}
+
+component ToolbarButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    callback clicked();
+
+    width: 66px;
+    height: 64px;
+    background: touch.pressed ? #343434 : touch.has-hover ? #2b2b2b : transparent;
+    border-width: touch.has-hover ? 1px : 0px;
+    border-color: #474747;
+
+    VerticalLayout {
+        padding-top: 8px;
+        padding-bottom: 1px;
+        spacing: 1px;
+
+        Text {
+            text: root.icon;
+            font-family: "Segoe MDL2 Assets";
+            color: #9bc4d6;
+            font-size: 28px;
+            horizontal-alignment: center;
+            height: 34px;
+            width: parent.width;
+        }
+
+        Text {
+            text: root.label;
+            color: #f2f2f2;
+            font-size: 12px;
+            horizontal-alignment: center;
+            height: 16px;
+            overflow: elide;
+            width: parent.width;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component CategoryRow inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> selected;
+    in property <length> indent;
+    callback clicked();
+
+    height: 30px;
+    background: selected ? #34383d : touch.has-hover ? #282c30 : transparent;
+    border-width: selected ? 1px : 0px;
+    border-color: selected ? #4e555d : transparent;
+    border-radius: 4px;
+    clip: true;
+
+    HorizontalLayout {
+        padding-left: 10px + root.indent;
+        padding-right: 8px;
+        spacing: 8px;
+        alignment: start;
+
+        Text {
+            text: root.icon;
+            font-family: "Segoe MDL2 Assets";
+            color: selected ? #d8e9f1 : #c9c27a;
+            font-size: 15px;
+            width: 20px;
+            height: parent.height;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.label;
+            color: selected ? #ffffff : #e4e4e4;
+            font-size: 13px;
+            width: parent.width - 40px;
+            height: parent.height;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component ActionButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 30px;
+    background: !enabled ? #282b30 : touch.pressed ? (primary ? #0e84bf : #31343a) : touch.has-hover ? (primary ? #20a8e8 : #42464d) : (primary ? #1689c8 : #363a40);
+    border-width: 1px;
+    border-color: !enabled ? #383d43 : primary ? #35c7ff : #575e66;
+    border-radius: 5px;
+    clip: true;
+
+    Text {
+        text: root.label;
+        color: root.enabled ? #ffffff : #8c8c8c;
+        font-size: 12px;
+        font-weight: 500;
+        width: root.width;
+        height: root.height;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        clicked => { if root.enabled { root.clicked(); } }
+    }
+}
+
+component HeaderCell inherits Rectangle {
+    in property <string> label;
+    in property <length> cell-width;
+    width: cell-width;
+    height: 32px;
+    background: #222528;
+    border-width: 1px;
+    border-color: #464c52;
+    clip: true;
+
+    Text {
+        text: root.label;
+        color: #f1f4f5;
+        font-size: 14px;
+        x: 8px;
+        width: root.cell-width - 16px;
+        height: root.height;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+component FlexHeaderCell inherits Rectangle {
+    in property <string> label;
+    horizontal-stretch: 1;
+    min-width: 120px;
+    height: 32px;
+    background: #222528;
+    border-width: 1px;
+    border-color: #464c52;
+    clip: true;
+
+    Text {
+        text: root.label;
+        color: #f1f4f5;
+        font-size: 14px;
+        x: 8px;
+        width: root.width - 16px;
+        height: root.height;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+component TableCell inherits Rectangle {
+    in property <string> value;
+    in property <length> cell-width;
+    in property <bool> selected;
+
+    width: cell-width;
+    height: 38px;
+    background: transparent;
+    border-width: 0px;
+    border-color: transparent;
+    clip: true;
+
+    Text {
+        text: root.value;
+        color: selected ? #ffffff : #eeeeee;
+        font-size: 13px;
+        x: 8px;
+        width: root.cell-width - 16px;
+        height: root.height;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+component MainProgressCell inherits Rectangle {
+    in property <float> progress;
+    in property <length> cell-width;
+    in property <string> status;
+    width: cell-width;
+    height: 6px;
+    background: #2b3034;
+    border-width: 1px;
+    border-color: #3c454b;
+    border-radius: 3px;
+    clip: true;
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        height: parent.height;
+        width: max(0px, parent.width * root.progress / 100);
+        background: root.status == "Paused" ? #d58a32 : (root.status == "Failed" ? #c04747 : #21b957);
+        border-radius: 3px;
+    }
+}
+
+component RowStatusIcon inherits Rectangle {
+    in property <string> status;
+    width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    background: status == "Complete" ? #235a38 : (status == "Paused" ? #5b4545 : (status == "Failed" ? #7d3030 : #1c6c9f));
+    border-width: 1px;
+    border-color: status == "Complete" ? #347c4d : (status == "Paused" ? #745252 : (status == "Failed" ? #a13c3c : #2fa8e1));
+
+    Text {
+        text: status == "Complete" ? "\u{E73E}" : (status == "Paused" ? "\u{E769}" : (status == "Failed" ? "\u{E711}" : "\u{E895}"));
+        font-family: "Segoe MDL2 Assets";
+        color: #eaf6f6;
+        font-size: 9px;
+        width: parent.width;
+        height: parent.height;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component FileTypeIcon inherits Rectangle {
+    in property <string> category;
+    width: 18px;
+    height: 18px;
+    background: category == "Video" ? #b9414d : (category == "Programs" ? #2a70a2 : (category == "General" ? #2b7cae : #2f6a89));
+    border-width: 1px;
+    border-color: #4d6c7d;
+    border-radius: 3px;
+
+    Text {
+        text: category == "Video" ? "\u{E768}" : (category == "Music" ? "\u{E8D6}" : (category == "Programs" ? "\u{E756}" : (category == "Compressed" ? "\u{E8B7}" : "\u{E8A5}")));
+        font-family: "Segoe MDL2 Assets";
+        color: #eef8fb;
+        font-size: 10px;
+        width: parent.width;
+        height: parent.height;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component TableRow inherits Rectangle {
+    in property <string> download-id;
+    in property <string> filename;
+    in property <string> size;
+    in property <string> status;
+    in property <string> time-left;
+    in property <string> rate;
+    in property <string> category;
+    in property <float> progress;
+    in property <bool> selected;
+    in property <bool> stripe;
+    callback clicked(string, bool, bool);
+    callback double-clicked(string);
+    callback context-action(string, string);
+    callback context-request(string, string, length, length);
+
+    height: 38px;
+    width: 100%;
+    background: selected ? #33383d : (touch.has-hover ? #2b2f33 : (stripe ? #242628 : #1d1f21));
+    border-width: 1px;
+    border-color: selected ? #4f697b : #191b1d;
+    clip: true;
+
+    HorizontalLayout {
+        spacing: 0px;
+        Rectangle {
+            horizontal-stretch: 1;
+            min-width: 120px;
+            height: root.height;
+            background: transparent;
+            clip: true;
+
+            FileTypeIcon {
+                x: 8px;
+                y: (parent.height - self.height) / 2;
+                category: root.category;
+            }
+
+            Text {
+                text: root.filename;
+                color: #f0f0f0;
+                font-size: 13px;
+                x: 33px;
+                y: root.progress > 0 && root.progress < 100 && root.status != "Complete" ? 4px : 0px;
+                width: parent.width - 41px;
+                height: root.progress > 0 && root.progress < 100 && root.status != "Complete" ? 18px : parent.height;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            if root.progress > 0 && root.progress < 100 && root.status != "Complete": MainProgressCell {
+                x: 33px;
+                y: 27px;
+                cell-width: parent.width - 41px;
+                progress: root.progress;
+                status: root.status;
+            }
+        }
+
+        TableCell { value: root.size; cell-width: 96px; selected: root.selected; }
+
+        Rectangle {
+            width: 112px;
+            height: root.height;
+            background: transparent;
+            clip: true;
+
+            RowStatusIcon {
+                x: 8px;
+                y: (parent.height - self.height) / 2;
+                status: root.status;
+            }
+
+            Text {
+                text: root.status;
+                color: #eeeeee;
+                font-size: 13px;
+                x: 31px;
+                width: 74px;
+                height: parent.height;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        TableCell { value: root.time-left; cell-width: 108px; selected: root.selected; }
+        TableCell { value: root.rate; cell-width: 134px; selected: root.selected; }
+        TableCell { value: root.category; cell-width: 120px; selected: root.selected; }
+    }
+
+    touch := TouchArea {
+        double-clicked => { root.double-clicked(root.download-id); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.clicked(root.download-id, event.modifiers.control, event.modifiers.shift);
+            } else if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                root.clicked(root.download-id, false, false);
+                root.context-request(root.download-id, root.status, root.absolute-position.x + touch.mouse-x, root.absolute-position.y + touch.mouse-y);
+            }
+        }
+    }
+}
+
+component SettingsTab inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 32px;
+    min-width: 108px;
+    horizontal-stretch: 1;
+    background: selected ? #123f63 : (touch.has-hover ? #25292d : transparent);
+    border-width: selected ? 1px : 0px;
+    border-color: selected ? #1d78b8 : transparent;
+    border-radius: 4px;
+    clip: true;
+
+    Rectangle {
+        visible: root.selected;
+        x: 1px;
+        y: parent.height - 3px;
+        width: parent.width - 2px;
+        height: 3px;
+        background: #0078d4;
+        border-radius: 0px;
+    }
+
+    Text {
+        text: root.label;
+        color: root.selected ? #ffffff : #c7cdd2;
+        font-size: 13px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component SettingsInput inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+
+    height: 30px;
+    background: transparent;
+    border-width: 0px;
+    clip: true;
+
+    LineEdit {
+        text <=> root.text;
+        placeholder-text: root.placeholder;
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        font-size: 13px;
+    }
+}
+
+component StatusTab inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 30px;
+    background: selected ? #2a2d31 : touch.has-hover ? #25292d : #1c1f22;
+    border-width: 1px;
+    border-color: selected ? #626a72 : #31363c;
+    border-radius: 5px;
+    clip: true;
+
+    Rectangle {
+        visible: root.selected;
+        x: 1px;
+        y: parent.height - 2px;
+        width: parent.width - 2px;
+        height: 2px;
+        background: #20a8e8;
+    }
+
+    Text {
+        text: root.label;
+        color: #ffffff;
+        font-size: 13px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component ToggleButton inherits Rectangle {
+    in-out property <bool> checked;
+    in property <string> label;
+
+    height: 26px;
+    background: transparent;
+    border-width: 0px;
+    border-color: transparent;
+    clip: true;
+
+    HorizontalLayout {
+        padding-left: 0px;
+        padding-right: 0px;
+        spacing: 8px;
+        alignment: start;
+
+        Rectangle {
+            width: 18px;
+            height: 18px;
+            border-width: 2px;
+            border-color: root.checked ? #63b8ed : #6c7478;
+            background: root.checked ? #268dca : #171a1d;
+            border-radius: 4px;
+
+            Text {
+                text: root.checked ? "\u{E73E}" : "";
+                font-family: "Segoe MDL2 Assets";
+                color: #ffffff;
+                font-size: 11px;
+                width: parent.width;
+                height: parent.height;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Text {
+            text: root.label;
+            color: #eeeeee;
+            font-size: 13px;
+            height: parent.height;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => { root.checked = !root.checked; }
+    }
+}
+
+component SettingsButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    callback clicked();
+
+    height: 32px;
+    background: touch.pressed ? (primary ? #0063ad : #2b2d2f) : touch.has-hover ? (primary ? #1688da : #3a3d40) : (primary ? #0078d4 : #26282b);
+    border-width: 1px;
+    border-color: primary ? #2699e6 : #3f464c;
+    border-radius: 4px;
+    clip: true;
+
+    Text {
+        text: root.label;
+        color: #ffffff;
+        font-size: 13px;
+        width: parent.width;
+        height: parent.height;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component TitlebarButton inherits Rectangle {
+    callback clicked();
+
+    width: 44px;
+    height: 30px;
+    background: touch.pressed ? #8b1f1f : touch.has-hover ? #c42b1c : transparent;
+
+    Text {
+        text: "\u{E711}";
+        font-family: "Segoe MDL2 Assets";
+        color: #ffffff;
+        font-size: 10px;
+        width: parent.width;
+        height: parent.height;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component CompletionToggle inherits Rectangle {
+    in-out property <bool> checked;
+    in property <string> label;
+
+    height: 22px;
+    background: touch.has-hover ? #24282c : transparent;
+    border-radius: 3px;
+
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        spacing: 10px;
+        alignment: start;
+
+        Rectangle {
+            width: 16px;
+            height: 16px;
+            border-width: 2px;
+            border-color: root.checked ? #22bdf4 : #36a7d1;
+            background: root.checked ? #116f99 : #1b2024;
+            border-radius: 4px;
+
+            Text {
+                text: root.checked ? "\u{E73E}" : "";
+                font-family: "Segoe MDL2 Assets";
+                color: #ffffff;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Text {
+            text: root.label;
+            color: #f0f4f7;
+            font-size: 12px;
+            height: parent.height;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => { root.checked = !root.checked; }
+    }
+}
+
+component ProgressBar inherits Rectangle {
+    in property <float> progress;
+    height: 20px;
+    background: #121619;
+    border-width: 1px;
+    border-color: #3e464d;
+    border-radius: 4px;
+    clip: true;
+
+    Rectangle {
+        x: 1px;
+        y: 1px;
+        height: parent.height - 2px;
+        width: max(0px, (parent.width - 2px) * root.progress / 100);
+        background: #22b653;
+        border-radius: 3px;
+    }
+}
+
+component DetailLabel inherits Text {
+    color: #b8c0c7;
+    font-size: 12px;
+    height: 18px;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+component DetailValue inherits Text {
+    color: #ffffff;
+    font-size: 12px;
+    height: 18px;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+component SupportIndicator inherits Rectangle {
+    in property <string> value;
+    property <bool> supported: root.value == "Supported" || root.value == "Yes";
+
+    width: 18px;
+    height: 18px;
+    border-radius: 9px;
+    background: root.supported ? #235a38 : #743030;
+    border-width: 1px;
+    border-color: root.supported ? #347c4d : #a13c3c;
+
+    Text {
+        text: root.supported ? "\u{E73E}" : "\u{E711}";
+        font-family: "Segoe MDL2 Assets";
+        color: #ffffff;
+        font-size: 10px;
+        width: parent.width;
+        height: parent.height;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component NativeSettingsWindow inherits Window {
+    title: "Velocity Download Manager Options";
+    icon: AppAssets.icon;
+    width: 660px;
+    height: 372px;
+    no-frame: true;
+
+    in-out property <string> active-tab: "Downloads";
+    in-out property <string> default-dir;
+    in-out property <string> temp-dir;
+    in-out property <string> segments-text;
+    in-out property <string> speed-limit-text;
+    in-out property <bool> start-on-boot;
+    in-out property <string> settings-message;
+    in-out property <string> update-status: "Up to date";
+    in-out property <string> update-version;
+    in-out property <string> update-notes;
+    in-out property <bool> update-available;
+    in-out property <bool> update-working;
+    callback save-settings(string, string, string, string, bool);
+    callback close-settings();
+    callback titlebar-drag-requested();
+    callback check-updates();
+    callback install-update();
+    callback open-extension-folder();
+    callback open-extension-page(string);
+    callback choose-default-folder();
+    callback choose-temp-folder();
+
+    background: #181a1c;
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #181a1c;
+        border-width: 1px;
+        border-color: #3a4046;
+
+        Rectangle {
+            x: 1px;
+            y: 1px;
+            width: parent.width - 2px;
+            height: 30px;
+            background: #242628;
+            border-width: 1px;
+            border-color: #363b40;
+
+            TouchArea {
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                        root.titlebar-drag-requested();
+                    }
+                }
+            }
+
+            Text {
+                text: "Velocity Download Manager Options";
+                color: #dce3e8;
+                font-size: 12px;
+                x: 10px;
+                width: parent.width - 62px;
+                height: parent.height;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            TitlebarButton {
+                x: parent.width - self.width;
+                y: 0px;
+                clicked => { root.close-settings(); }
+            }
+        }
+
+        HorizontalLayout {
+            x: 16px;
+            y: 43px;
+            width: parent.width - 32px;
+            height: 32px;
+            spacing: 6px;
+            SettingsTab { label: "Downloads"; selected: root.active-tab == "Downloads"; clicked => { root.active-tab = "Downloads"; } }
+            SettingsTab { label: "Storage"; selected: root.active-tab == "Storage"; clicked => { root.active-tab = "Storage"; } }
+            SettingsTab { label: "Browser Extension"; selected: root.active-tab == "Browser Extension"; clicked => { root.active-tab = "Browser Extension"; } }
+            SettingsTab { label: "Updates"; selected: root.active-tab == "Updates"; clicked => { root.active-tab = "Updates"; } }
+        }
+
+        Rectangle {
+            x: 16px;
+            y: 86px;
+            width: parent.width - 32px;
+            height: 218px;
+            background: #1b1d20;
+            border-width: 1px;
+            border-color: #454545;
+            border-radius: 4px;
+            clip: true;
+
+            if root.active-tab == "Downloads": VerticalLayout {
+                padding: 12px;
+                spacing: 6px;
+
+                Text { text: "Connections per download"; color: #ffffff; font-size: 13px; height: 18px; }
+                SettingsInput { text <=> root.segments-text; placeholder: ""; }
+                Text { text: "Global speed limit, KB/s"; color: #ffffff; font-size: 13px; height: 18px; }
+                SettingsInput { text <=> root.speed-limit-text; placeholder: "0 for unlimited"; }
+                ToggleButton { label: "Start Velocity when Windows starts"; checked <=> root.start-on-boot; width: 320px; }
+            }
+
+            if root.active-tab == "Storage": VerticalLayout {
+                padding: 12px;
+                spacing: 6px;
+
+                Text { text: "Default save folder"; color: #ffffff; font-size: 13px; height: 18px; }
+                HorizontalLayout {
+                    height: 30px;
+                    spacing: 8px;
+                    SettingsInput { text <=> root.default-dir; placeholder: ""; horizontal-stretch: 1; }
+                    SettingsButton { label: "Browse"; primary: false; width: 82px; clicked => { root.choose-default-folder(); } }
+                }
+                Text { text: "Temporary files folder"; color: #ffffff; font-size: 13px; height: 18px; }
+                HorizontalLayout {
+                    height: 30px;
+                    spacing: 8px;
+                    SettingsInput { text <=> root.temp-dir; placeholder: "Same as save location"; horizontal-stretch: 1; }
+                    SettingsButton { label: "Browse"; primary: false; width: 82px; clicked => { root.choose-temp-folder(); } }
+                }
+            }
+
+            if root.active-tab == "Browser Extension": VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+
+                Text { text: "Browser extension"; color: #ffffff; font-size: 13px; height: 18px; }
+                Text { text: "1. Click Open Folder."; color: #cfcfcf; font-size: 12px; height: 18px; overflow: elide; }
+                Text { text: "2. Open your browser extensions page and turn on Developer mode."; color: #cfcfcf; font-size: 12px; height: 18px; overflow: elide; }
+                Text { text: "3. Click Load unpacked and choose the folder that was opened."; color: #cfcfcf; font-size: 12px; height: 18px; overflow: elide; }
+                Text { text: "Keep VDM running so browser downloads and video buttons can be sent to the app."; color: #cfcfcf; font-size: 12px; height: 32px; wrap: word-wrap; }
+                HorizontalLayout {
+                    height: 32px;
+                    spacing: 8px;
+                    alignment: start;
+                    SettingsButton { label: "Open Folder"; primary: true; width: 108px; clicked => { root.open-extension-folder(); } }
+                    SettingsButton { label: "Chrome"; primary: false; width: 78px; clicked => { root.open-extension-page("chrome"); } }
+                    SettingsButton { label: "Edge"; primary: false; width: 66px; clicked => { root.open-extension-page("edge"); } }
+                    SettingsButton { label: "Brave"; primary: false; width: 70px; clicked => { root.open-extension-page("brave"); } }
+                }
+            }
+
+            if root.active-tab == "Updates": VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+
+                Text { text: "Update status"; color: #ffffff; font-size: 13px; height: 18px; }
+                Text { text: root.update-status; color: #ffffff; font-size: 13px; height: 20px; overflow: elide; }
+                Text { visible: root.update-available; text: "Version " + root.update-version + " is available."; color: #cfcfcf; font-size: 12px; height: 20px; overflow: elide; }
+                Text { text: root.update-notes; color: #cfcfcf; font-size: 12px; height: 42px; wrap: word-wrap; overflow: elide; }
+                HorizontalLayout {
+                    height: 32px;
+                    spacing: 8px;
+                    alignment: start;
+                    SettingsButton { label: root.update-working ? "Checking..." : "Check for updates"; primary: false; width: 132px; clicked => { root.check-updates(); } }
+                    SettingsButton { visible: root.update-available; label: root.update-working ? "Downloading..." : "Install update"; primary: true; width: 112px; clicked => { root.install-update(); } }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            x: parent.width - 214px;
+            y: parent.height - 50px;
+            width: 198px;
+            height: 32px;
+            spacing: 12px;
+            SettingsButton { label: "Cancel"; primary: false; width: 93px; clicked => { root.close-settings(); } }
+            SettingsButton { label: "Save"; primary: true; width: 93px; clicked => { root.save-settings(root.default-dir, root.temp-dir, root.segments-text, root.speed-limit-text, root.start-on-boot); } }
+        }
+    }
+}
+
+export component DownloadStatusWindow inherits Window {
+    in property <string> window-title: "Velocity Download Status";
+    title: root.window-title;
+    icon: AppAssets.icon;
+    width: 650px;
+    height: root.show-details ? 446px : (root.active-tab == "Options on completion" ? 304px : (root.active-tab == "Speed Limiter" ? 292px : 296px));
+
+    in property <string> download-id;
+    in property <string> filename;
+    in property <string> url;
+    in property <string> save-path;
+    in property <string> file-size;
+    in property <string> downloaded;
+    in property <string> status;
+    in property <string> rate;
+    in property <string> time-left;
+    in property <string> resume-capability;
+    in property <string> connections;
+    in property <string> progress-text;
+    in property <float> progress;
+    in property <[SegmentRow]> segments;
+    in-out property <string> speed-limit-text;
+    in-out property <string> speed-limit-message;
+    in-out property <bool> open-file-on-complete;
+    in-out property <bool> open-folder-on-complete;
+    in-out property <bool> close-on-complete;
+    in-out property <string> active-tab: "Download status";
+    in-out property <bool> show-details;
+    callback pause-or-resume(string);
+    callback cancel-download(string);
+    callback close-window(string);
+    callback open-folder(string);
+    callback set-speed-limit(string, string);
+
+    background: #181b1e;
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 7px;
+
+        HorizontalLayout {
+            spacing: 12px;
+
+            Rectangle {
+                width: 40px;
+                height: 40px;
+                background: #1687c8;
+                border-width: 1px;
+                border-color: #2bb7f3;
+                border-radius: 5px;
+
+                Text {
+                    text: "\u{E896}";
+                    font-family: "Segoe MDL2 Assets";
+                    color: #ffffff;
+                    font-size: 22px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            VerticalLayout {
+                spacing: 2px;
+                Text { text: root.filename; color: #ffffff; font-size: 16px; font-weight: 600; height: 21px; overflow: elide; }
+                Text { text: root.url; color: #c0c6cc; font-size: 12px; height: 17px; overflow: elide; }
+            }
+        }
+
+        Rectangle {
+            height: 38px;
+            background: #202326;
+            border-width: 1px;
+            border-color: #50565d;
+            border-radius: 7px;
+            clip: true;
+
+            ProgressBar {
+                x: 12px;
+                y: 9px;
+                width: parent.width - 174px;
+                progress: root.progress;
+            }
+
+            Text {
+                text: root.status == "Complete" ? root.progress-text + " Complete" : root.progress-text;
+                x: parent.width - 142px;
+                width: 116px;
+                height: parent.height;
+                color: #ffffff;
+                font-size: 13px;
+                horizontal-alignment: left;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            Text {
+                visible: root.status == "Complete";
+                text: "\u{E73E}";
+                font-family: "Segoe MDL2 Assets";
+                x: parent.width - 26px;
+                width: 18px;
+                height: parent.height;
+                color: #ffffff;
+                font-size: 15px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 4px;
+            StatusTab { label: "Status"; width: 100px; selected: root.active-tab == "Download status"; clicked => { root.active-tab = "Download status"; } }
+            StatusTab { label: "Speed"; width: 100px; selected: root.active-tab == "Speed Limiter"; clicked => { root.active-tab = "Speed Limiter"; root.show-details = false; } }
+            StatusTab { label: "Options"; width: 100px; selected: root.active-tab == "Options on completion"; clicked => { root.active-tab = "Options on completion"; root.show-details = false; } }
+        }
+
+        Rectangle {
+            height: root.show-details ? 244px : (root.active-tab == "Options on completion" ? 136px : (root.active-tab == "Speed Limiter" ? 118px : 96px));
+            background: #242629;
+            border-width: 1px;
+            border-color: #4c535a;
+            border-radius: 6px;
+            clip: true;
+
+            if root.active-tab == "Download status": VerticalLayout {
+                padding: 8px;
+                spacing: 6px;
+
+                HorizontalLayout {
+                    spacing: 10px;
+
+                    VerticalLayout {
+                        spacing: 3px;
+                        DetailLabel { text: "Status:"; width: 96px; }
+                        DetailLabel { text: "File size:"; width: 96px; }
+                        DetailLabel { text: "Downloaded:"; width: 96px; }
+                        DetailLabel { text: "Transfer rate:"; width: 96px; }
+                    }
+
+                    VerticalLayout {
+                        spacing: 3px;
+                        DetailValue { text: root.status; width: 112px; }
+                        DetailValue { text: root.file-size; width: 112px; }
+                        DetailValue { text: root.downloaded; width: 112px; }
+                        DetailValue { text: root.status == "Complete" ? "Finished" : (root.rate == "" ? "Waiting" : root.rate); width: 112px; }
+                    }
+
+                    VerticalLayout {
+                        spacing: 3px;
+                        DetailLabel { text: "Time left:"; width: 88px; }
+                        DetailLabel { text: "Resume:"; width: 88px; }
+                        DetailLabel { text: "Connections:"; width: 88px; }
+                        DetailLabel { text: "Save to:"; width: 88px; }
+                    }
+
+                    VerticalLayout {
+                        spacing: 3px;
+                        DetailValue { text: root.status == "Complete" ? "--" : (root.time-left == "" ? "Unknown" : root.time-left); width: 240px; }
+                        Rectangle {
+                            width: 240px;
+                            height: 18px;
+                            SupportIndicator {
+                                x: 0px;
+                                y: 0px;
+                                value: root.resume-capability;
+                            }
+                        }
+                        DetailValue { text: root.connections; width: 240px; }
+                        DetailValue { text: root.save-path; width: 240px; }
+                    }
+                }
+
+                if root.show-details: Rectangle {
+                    height: 24px;
+                    background: #1c2024;
+                    border-width: 1px;
+                    border-color: #3e464d;
+                    border-radius: 3px;
+
+                    Text {
+                        text: "Connection activity";
+                        color: #e8f1f6;
+                        font-size: 12px;
+                        x: 10px;
+                        width: parent.width - 20px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                    }
+                }
+
+                if root.show-details: ScrollView {
+                    height: 122px;
+                    viewport-width: parent.width - 24px;
+                    viewport-height: max(122px, root.segments.length * 22px);
+                    vertical-scrollbar-policy: ScrollBarPolicy.always-on;
+                    horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                    mouse-drag-pan-enabled: true;
+
+                    VerticalLayout {
+                        spacing: 0px;
+
+                        for segment in root.segments: Rectangle {
+                            height: 22px;
+                            background: #202428;
+                            border-width: 1px;
+                            border-color: #313840;
+                            clip: true;
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 18px;
+                                spacing: 8px;
+
+                                Text { text: segment.number; color: #e6e6e6; font-size: 13px; width: 28px; vertical-alignment: center; }
+                                Text { text: segment.downloaded; color: #e6e6e6; font-size: 12px; width: 74px; vertical-alignment: center; overflow: elide; }
+                                Rectangle {
+                                    width: 298px;
+                                    height: 10px;
+                                    background: #15191d;
+                                    border-width: 1px;
+                                    border-color: #38434c;
+                                    border-radius: 3px;
+                                    clip: true;
+
+                                    Rectangle {
+                                        x: 1px;
+                                        y: 1px;
+                                        height: parent.height - 2px;
+                                        width: max(0px, (parent.width - 2px) * segment.progress / 100);
+                                        background: #1db8ef;
+                                        border-radius: 2px;
+                                    }
+                                }
+                                Text { text: segment.status; color: #e6e6e6; font-size: 12px; width: 100px; vertical-alignment: center; overflow: elide; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.active-tab == "Speed Limiter": VerticalLayout {
+                padding: 10px;
+                spacing: 5px;
+                Text { text: "Speed limiter"; color: #ffffff; font-size: 13px; font-weight: 600; height: 18px; }
+                Text { text: "Limit only this download. Leave empty or use 0 for unlimited."; color: #d4dbe0; font-size: 12px; height: 18px; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    LineEdit { text <=> root.speed-limit-text; placeholder-text: "KB/s"; width: 120px; height: 30px; }
+                    ActionButton { label: "Apply"; width: 82px; primary: true; clicked => { root.set-speed-limit(root.download-id, root.speed-limit-text); } }
+                    ActionButton { label: "Unlimited"; width: 90px; clicked => { root.speed-limit-text = ""; root.set-speed-limit(root.download-id, ""); } }
+                }
+                Text { text: root.speed-limit-message; color: #cfcfcf; font-size: 12px; height: 16px; overflow: elide; }
+            }
+
+            if root.active-tab == "Options on completion": VerticalLayout {
+                padding: 10px;
+                spacing: 5px;
+                Text { text: "Options on completion"; color: #ffffff; font-size: 13px; font-weight: 600; height: 18px; }
+                CompletionToggle { label: "Open downloaded file"; checked <=> root.open-file-on-complete; width: 220px; }
+                CompletionToggle { label: "Show file in folder"; checked <=> root.open-folder-on-complete; width: 220px; }
+                CompletionToggle { label: "Close this window"; checked <=> root.close-on-complete; width: 220px; }
+                Text { text: "These actions run when this download completes."; color: #d4dbe0; font-size: 12px; height: 16px; }
+            }
+        }
+
+        if root.active-tab == "Download status": Rectangle {
+            height: 34px;
+            background: transparent;
+
+            HorizontalLayout {
+                spacing: 12px;
+
+                if root.status == "Complete": ActionButton { label: "Open Folder"; width: 108px; clicked => { root.open-folder(root.save-path); } }
+                ActionButton { label: root.show-details ? "Hide Details" : "Show Details"; width: 108px; clicked => { root.show-details = !root.show-details; } }
+                Rectangle { horizontal-stretch: 1; }
+                if root.status != "Complete": ActionButton { label: root.status == "Paused" || root.status == "Failed" || root.status == "Queued" ? "Resume" : "Pause"; width: 96px; clicked => { root.pause-or-resume(root.download-id); } }
+                ActionButton { label: root.status == "Complete" ? "Close" : "Cancel"; width: 108px; clicked => { if root.status == "Complete" { root.close-window(root.download-id); } else { root.cancel-download(root.download-id); } } }
+            }
+        }
+    }
+}
+
+export component NativeAddDownloadWindow inherits Window {
+    title: "Add New Download";
+    icon: AppAssets.icon;
+    preferred-width: 590px;
+    preferred-height: 170px;
+    min-width: 520px;
+    min-height: 160px;
+
+    in-out property <string> download-url;
+    in-out property <string> filename;
+    in-out property <string> file-size;
+    in-out property <string> save-path;
+    in-out property <string> analysis-message;
+    in-out property <bool> analyzing;
+    in-out property <bool> can-start;
+    in-out property <bool> is-media;
+    in-out property <[QualityOption]> qualities;
+    in-out property <string> selected-quality-id;
+    in-out property <string> selected-quality-label;
+    in-out property <string> selected-quality-size-bytes;
+    in-out property <bool> quality-open;
+    in-out property <bool> analysis-pending;
+    in-out property <bool> ffmpeg-required;
+    in-out property <bool> ffmpeg-installing;
+    in-out property <float> ffmpeg-progress;
+    in-out property <string> ffmpeg-message;
+
+    callback analyze-url(string);
+    callback start-download(string, string, string, string, string);
+    callback queue-download(string, string, string, string, string);
+    callback download-ffmpeg(string, string, string, string, string);
+    callback choose-folder(string, string);
+    callback close-window();
+    callback quality-open-changed(bool);
+
+    background: #17191b;
+
+    analysis-debounce := Timer {
+        interval: 550ms;
+        running: root.analysis-pending;
+        triggered => {
+            root.analysis-pending = false;
+            if root.download-url != "" {
+                root.analyzing = true;
+                root.can-start = false;
+                root.analysis-message = "";
+                root.analyze-url(root.download-url);
+            }
+        }
+    }
+
+    Rectangle {
+        width: root.width;
+        height: root.height;
+        background: #1b1d1f;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text { text: "Download URL"; color: #aeb8c2; font-size: 12px; height: 18px; }
+            LineEdit {
+                text <=> root.download-url;
+                placeholder-text: "https://example.com/file.zip";
+                height: 32px;
+                font-size: 13px;
+                edited(text) => {
+                    root.filename = "";
+                    root.file-size = "";
+                    root.save-path = "";
+                    root.selected-quality-id = "";
+                    root.selected-quality-label = "";
+                    root.qualities = [];
+                    root.is-media = false;
+                    root.can-start = false;
+                    root.analysis-message = "";
+                    root.ffmpeg-required = false;
+                    root.ffmpeg-message = "";
+                    root.analysis-pending = text != "";
+                }
+                accepted => {
+                    if root.download-url != "" {
+                        root.analysis-pending = false;
+                        root.analyzing = true;
+                        root.can-start = false;
+                        root.analysis-message = "";
+                        root.analyze-url(root.download-url);
+                    }
+                }
+            }
+
+            if root.analysis-message != "" && !root.analyzing && !root.can-start: Rectangle {
+                height: 34px;
+                background: #321c1c;
+                border-width: 1px;
+                border-color: #8b3737;
+                border-radius: 4px;
+                Text {
+                    text: root.analysis-message;
+                    color: #ffb8b8;
+                    font-size: 12px;
+                    x: 9px;
+                    width: parent.width - 18px;
+                    height: parent.height;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            Rectangle {
+                height: root.can-start ? 118px : 0px;
+                visible: root.can-start;
+                background: #202326;
+                border-width: 1px;
+                border-color: #3c434a;
+                border-radius: 5px;
+
+                GridLayout {
+                    padding: 10px;
+                    spacing: 8px;
+                    Row {
+                        Text { text: "File name"; color: #9ca8b2; font-size: 12px; width: 88px; }
+                        Text { text: root.filename; color: #ffffff; font-size: 13px; overflow: elide; }
+                    }
+                    Row {
+                        Text { text: "Size"; color: #9ca8b2; font-size: 12px; width: 88px; }
+                        Text { text: root.file-size == "" ? "Unknown" : root.file-size; color: #e6e6e6; font-size: 13px; overflow: elide; }
+                    }
+                    Row {
+                        Text { text: "Save to"; color: #9ca8b2; font-size: 12px; width: 88px; }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            LineEdit {
+                                text <=> root.save-path;
+                                height: 26px;
+                                font-size: 13px;
+                                read-only: true;
+                                placeholder-text: "Choose final file path";
+                            }
+                            Button {
+                                text: "Browse";
+                                width: 82px;
+                                height: 26px;
+                                clicked => { root.choose-folder(root.save-path, root.filename); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.can-start && root.is-media && root.qualities.length > 0: Rectangle {
+                height: root.quality-open ? 150px : 36px;
+                background: #202326;
+                border-width: 1px;
+                border-color: #3c434a;
+                border-radius: 5px;
+                clip: true;
+
+                Text {
+                    text: "Quality";
+                    color: #9ca8b2;
+                    font-size: 12px;
+                    x: 10px;
+                    y: 9px;
+                    width: 70px;
+                    height: 18px;
+                }
+
+                Rectangle {
+                    x: 82px;
+                    y: 5px;
+                    width: parent.width - 92px;
+                    height: 26px;
+                    background: #111315;
+                    border-width: 1px;
+                    border-color: #4a535c;
+                    border-radius: 4px;
+                    Text {
+                        text: root.selected-quality-label == "" ? "Best available" : root.selected-quality-label;
+                        color: #ffffff;
+                        font-size: 13px;
+                        x: 8px;
+                        width: parent.width - 30px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: "\u{E70D}";
+                        font-family: "Segoe MDL2 Assets";
+                        color: #b7c5d1;
+                        x: parent.width - 22px;
+                        width: 16px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
+                    TouchArea {
+                        clicked => {
+                            root.quality-open = !root.quality-open;
+                            root.quality-open-changed(root.quality-open);
+                        }
+                    }
+                }
+
+                if root.quality-open: ScrollView {
+                    x: 82px;
+                    y: 34px;
+                    width: parent.width - 92px;
+                    height: 108px;
+                    viewport-width: self.visible-width;
+                    viewport-height: root.qualities.length * 28px;
+                    horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                    vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+
+                    VerticalLayout {
+                        width: parent.visible-width;
+                        spacing: 0px;
+                        for option in root.qualities: Rectangle {
+                            height: 28px;
+                            background: option.id == root.selected-quality-id ? #123f63 : (touch.has-hover ? #2d3338 : #151719);
+                            Text {
+                                text: option.label;
+                                color: #ffffff;
+                                font-size: 13px;
+                                x: 8px;
+                                width: parent.width - 16px;
+                                height: parent.height;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            touch := TouchArea {
+                                clicked => {
+                                    root.selected-quality-id = option.id;
+                                    root.selected-quality-label = option.label;
+                                    root.selected-quality-size-bytes = option.size_bytes;
+                                    root.file-size = option.size == "" ? "Unknown" : option.size;
+                                    root.quality-open = false;
+                                    root.quality-open-changed(false);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.ffmpeg-required || root.ffmpeg-installing: Rectangle {
+                height: 58px;
+                background: #242018;
+                border-width: 1px;
+                border-color: #71562d;
+                border-radius: 5px;
+
+                Text {
+                    text: root.ffmpeg-message == "" ? "FFmpeg is required for video merging. Download it now? (~60MB)" : root.ffmpeg-message;
+                    color: #f1d9a8;
+                    font-size: 12px;
+                    x: 10px;
+                    y: 8px;
+                    width: parent.width - 142px;
+                    height: 18px;
+                    overflow: elide;
+                }
+
+                Rectangle {
+                    visible: root.ffmpeg-installing;
+                    x: 10px;
+                    y: 34px;
+                    width: parent.width - 20px;
+                    height: 8px;
+                    background: #121416;
+                    border-width: 1px;
+                    border-color: #424951;
+                    border-radius: 3px;
+
+                    Rectangle {
+                        width: parent.width * root.ffmpeg-progress / 100;
+                        height: parent.height;
+                        background: #20a8e8;
+                        border-radius: 3px;
+                    }
+                }
+
+                Rectangle {
+                    visible: !root.ffmpeg-installing;
+                    x: parent.width - 126px;
+                    y: 14px;
+                    width: 112px;
+                    height: 30px;
+                    background: ffmpeg-touch.pressed ? #0063ad : ffmpeg-touch.has-hover ? #1688da : #0078d4;
+                    border-width: 1px;
+                    border-color: #2699e6;
+                    border-radius: 4px;
+                    clip: true;
+
+                    Text {
+                        text: "Download FFmpeg";
+                        color: #ffffff;
+                        font-size: 12px;
+                        width: parent.width;
+                        height: parent.height;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    ffmpeg-touch := TouchArea {
+                        clicked => {
+                            root.download-ffmpeg(root.download-url, root.selected-quality-id, root.filename, root.save-path, root.selected-quality-size-bytes);
+                        }
+                    }
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; background: transparent; }
+
+            HorizontalLayout {
+                height: 34px;
+                alignment: end;
+                spacing: 8px;
+                Button { text: "Cancel"; clicked => { root.close-window(); } }
+                Button {
+                    text: "Queue";
+                    enabled: root.can-start && !root.analyzing && !root.analysis-pending && !root.ffmpeg-installing;
+                    clicked => {
+                        root.queue-download(root.download-url, root.selected-quality-id, root.filename, root.save-path, root.selected-quality-size-bytes);
+                    }
+                }
+                Button {
+                    text: root.analyzing || root.analysis-pending ? "Analyzing..." : "Start Download";
+                    enabled: root.can-start && !root.analyzing && !root.analysis-pending && !root.ffmpeg-installing;
+                    clicked => {
+                        root.start-download(root.download-url, root.selected-quality-id, root.filename, root.save-path, root.selected-quality-size-bytes);
+                    }
+                }
+            }
+        }
+    }
+}
+
+component BatchModeOption inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 31px;
+    background: selected ? #123f63 : (touch.has-hover ? #25292d : #1e2124);
+    border-width: 1px;
+    border-color: selected ? #1d78b8 : #454b50;
+    border-radius: 4px;
+    clip: true;
+
+    Text {
+        text: root.label;
+        color: #f0f0f0;
+        font-size: 13px;
+        x: 10px;
+        width: root.width - 20px;
+        height: root.height;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component BatchQueueItem inherits Rectangle {
+    in property <string> index;
+    in property <string> url;
+    in property <string> status;
+    in property <string> error;
+    in property <float> progress;
+    in property <bool> active;
+
+    height: error == "" ? 42px : 58px;
+    background: active ? #252d35 : #202326;
+    border-width: 1px;
+    border-color: active ? #1d78b8 : #3c434a;
+    border-radius: 4px;
+    clip: true;
+
+    Text {
+        text: root.index;
+        color: #8d98a3;
+        font-size: 12px;
+        x: 9px;
+        y: 7px;
+        width: 24px;
+        height: 18px;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+
+    Text {
+        text: root.url;
+        color: #e5e8eb;
+        font-size: 12px;
+        x: 42px;
+        y: 7px;
+        width: parent.width - 152px;
+        height: 18px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    Text {
+        text: root.status;
+        color: root.status == "Failed" ? #ff8d8d : (root.status == "Complete" ? #55d38d : #8ed8ff);
+        font-size: 11px;
+        x: parent.width - 100px;
+        y: 7px;
+        width: 88px;
+        height: 18px;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    Rectangle {
+        x: 42px;
+        y: 30px;
+        width: parent.width - 54px;
+        height: 4px;
+        background: #151719;
+        border-radius: 2px;
+        clip: true;
+
+        Rectangle {
+            width: parent.width * root.progress / 100;
+            height: parent.height;
+            background: root.status == "Failed" ? #c04747 : #1e9ee8;
+            border-radius: 2px;
+        }
+    }
+
+    if root.error != "": Text {
+        text: root.error;
+        color: #ff9d9d;
+        font-size: 11px;
+        x: 42px;
+        y: 38px;
+        width: parent.width - 54px;
+        height: 16px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+component TimeSegmentButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    width: 44px;
+    height: 30px;
+    background: root.selected ? #0c5c92 : (touch.has-hover ? #2c3339 : #1b1f23);
+    border-width: 1px;
+    border-color: root.selected ? #2aa9ee : #454b50;
+    border-radius: 4px;
+    clip: true;
+
+    Text {
+        text: root.label;
+        color: #ffffff;
+        font-size: 12px;
+        font-weight: root.selected ? 600 : 400;
+        width: parent.width;
+        height: parent.height;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component TimePicker inherits Rectangle {
+    in property <string> label;
+    in-out property <int> hour;
+    in-out property <int> minute;
+    in-out property <bool> pm;
+
+    width: 280px;
+    height: 42px;
+    background: transparent;
+
+    HorizontalLayout {
+        width: root.width;
+        height: root.height;
+        spacing: 8px;
+
+        Text {
+            text: root.label;
+            color: #dce3e8;
+            font-size: 13px;
+            width: root.label == "" ? 0px : 90px;
+            height: parent.height;
+            vertical-alignment: center;
+        }
+
+        TimeSegmentButton {
+            label: (root.hour < 10 ? "0" : "") + root.hour;
+            width: 48px;
+            clicked => {
+                root.hour = root.hour >= 12 ? 1 : root.hour + 1;
+            }
+        }
+
+        Text {
+            text: ":";
+            color: #ffffff;
+            font-size: 18px;
+            width: 8px;
+            height: parent.height;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        TimeSegmentButton {
+            label: (root.minute < 10 ? "0" : "") + root.minute;
+            width: 48px;
+            clicked => {
+                root.minute = root.minute >= 55 ? 0 : root.minute + 5;
+            }
+        }
+
+        TimeSegmentButton {
+            label: "AM";
+            selected: !root.pm;
+            clicked => { root.pm = false; }
+        }
+
+        TimeSegmentButton {
+            label: "PM";
+            selected: root.pm;
+            clicked => { root.pm = true; }
+        }
+    }
+}
+
+export component DownloadCompleteWindow inherits Window {
+    title: "Download complete";
+    icon: AppAssets.icon;
+    preferred-width: 520px;
+    preferred-height: 250px;
+    min-width: 520px;
+    min-height: 230px;
+
+    in property <string> filename;
+    in property <string> url;
+    in property <string> save-path;
+    in property <string> downloaded;
+    in-out property <bool> dont-show-again;
+    callback open-file(string);
+    callback open-with(string);
+    callback open-folder(string);
+    callback close-window(bool);
+
+    background: #181b1e;
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #242629;
+        border-width: 1px;
+        border-color: #4c535a;
+
+        VerticalLayout {
+            padding: 14px;
+            spacing: 10px;
+
+            HorizontalLayout {
+                spacing: 12px;
+                height: 42px;
+
+                Rectangle {
+                    width: 38px;
+                    height: 38px;
+                    background: #1687c8;
+                    border-width: 1px;
+                    border-color: #2bb7f3;
+                    border-radius: 5px;
+
+                    Text {
+                        text: "\u{E73E}";
+                        font-family: "Segoe MDL2 Assets";
+                        color: #ffffff;
+                        font-size: 20px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 2px;
+                    Text { text: "Download complete"; color: #ffffff; font-size: 13px; font-weight: 600; height: 18px; overflow: elide; }
+                    Text { text: "Downloaded " + root.downloaded; color: #ffffff; font-size: 12px; height: 18px; overflow: elide; }
+                }
+            }
+
+            VerticalLayout {
+                spacing: 4px;
+                Text { text: "Address"; color: #dce3e8; font-size: 12px; height: 16px; }
+                Rectangle {
+                    height: 25px;
+                    background: #1e2023;
+                    border-width: 1px;
+                    border-color: #6b737b;
+                    clip: true;
+                    Text {
+                        text: root.url;
+                        color: #ffffff;
+                        font-size: 12px;
+                        x: 8px;
+                        width: parent.width - 16px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                Text { text: "File saved as"; color: #dce3e8; font-size: 12px; height: 16px; }
+                Rectangle {
+                    height: 25px;
+                    background: #1e2023;
+                    border-width: 1px;
+                    border-color: #6b737b;
+                    clip: true;
+                    Text {
+                        text: root.save-path;
+                        color: #ffffff;
+                        font-size: 12px;
+                        x: 8px;
+                        width: parent.width - 16px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                height: 32px;
+                spacing: 16px;
+                Rectangle { horizontal-stretch: 1; }
+                ActionButton { label: "Open"; width: 92px; primary: true; clicked => { root.open-file(root.save-path); } }
+                ActionButton { label: "Open with..."; width: 112px; clicked => { root.open-with(root.save-path); } }
+                ActionButton { label: "Open folder"; width: 112px; clicked => { root.open-folder(root.save-path); } }
+                ActionButton { label: "Close"; width: 92px; clicked => { root.close-window(root.dont-show-again); } }
+                Rectangle { horizontal-stretch: 1; }
+            }
+
+            Rectangle { height: 4px; background: transparent; }
+
+            CompletionToggle {
+                label: "Don't show this dialog again";
+                checked <=> root.dont-show-again;
+                width: 240px;
+            }
+        }
+    }
+}
+
+export component NativeBatchDownloadWindow inherits Window {
+    title: "Batch Download";
+    icon: AppAssets.icon;
+    preferred-width: 620px;
+    preferred-height: 540px;
+    min-width: 560px;
+    min-height: 220px;
+
+    in-out property <string> urls-text;
+    in-out property <string> save-dir;
+    in-out property <string> extension-filter;
+    in-out property <bool> sequential-mode;
+    in-out property <bool> started;
+    in-out property <string> batch-message;
+    in-out property <[BatchQueueRow]> queue-rows;
+
+    callback close-window();
+    callback choose-folder(string);
+    callback import-list();
+    callback start-batch(string, string, string, bool);
+    callback queue-batch(string, string, string, bool);
+
+    background: #17191b;
+
+    Rectangle {
+        width: root.width;
+        height: root.height;
+        background: #1b1d1f;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            if !root.started: Text { text: "URLs"; color: #aeb8c2; font-size: 12px; height: 18px; }
+            if !root.started: TextEdit {
+                text <=> root.urls-text;
+                height: 135px;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+
+            if !root.started: HorizontalLayout {
+                height: 32px;
+                spacing: 8px;
+                ActionButton { label: "Import List"; width: 96px; clicked => { root.import-list(); } }
+                LineEdit {
+                    text <=> root.extension-filter;
+                    placeholder-text: "Filter extensions: zip, mp4, exe";
+                    font-size: 13px;
+                    height: 30px;
+                }
+            }
+
+            if !root.started: Text { text: "Download mode"; color: #aeb8c2; font-size: 12px; height: 18px; }
+            if !root.started: HorizontalLayout {
+                height: 31px;
+                spacing: 8px;
+                BatchModeOption { label: "All at once"; selected: !root.sequential-mode; clicked => { root.sequential-mode = false; } }
+                BatchModeOption { label: "One by one"; selected: root.sequential-mode; clicked => { root.sequential-mode = true; } }
+            }
+
+            if !root.started: Text { text: "Save to"; color: #aeb8c2; font-size: 12px; height: 18px; }
+            if !root.started: HorizontalLayout {
+                height: 32px;
+                spacing: 8px;
+                LineEdit {
+                    text <=> root.save-dir;
+                    read-only: true;
+                    font-size: 13px;
+                    height: 30px;
+                    placeholder-text: "Choose save folder";
+                }
+                ActionButton { label: "Browse"; width: 84px; clicked => { root.choose-folder(root.save-dir); } }
+            }
+
+            if root.batch-message != "": Rectangle {
+                height: 31px;
+                background: #202326;
+                border-width: 1px;
+                border-color: #3c434a;
+                border-radius: 4px;
+                Text {
+                    text: root.batch-message;
+                    color: #d4dbe0;
+                    font-size: 12px;
+                    x: 10px;
+                    width: parent.width - 20px;
+                    height: parent.height;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            if root.started: Text { text: "Queue"; color: #aeb8c2; font-size: 12px; height: 18px; }
+            if root.started && root.queue-rows.length == 0: Rectangle {
+                height: 64px;
+                background: #202326;
+                border-width: 1px;
+                border-color: #3c434a;
+                border-radius: 5px;
+                Text {
+                    text: "Downloads started. Progress is shown in the main window.";
+                    color: #d4dbe0;
+                    font-size: 13px;
+                    x: 12px;
+                    width: parent.width - 24px;
+                    height: parent.height;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                    overflow: elide;
+                }
+            }
+            if root.started: ScrollView {
+                height: min(180px, max(48px, root.queue-rows.length * 48px));
+                vertical-stretch: 1;
+                viewport-width: self.visible-width;
+                viewport-height: max(self.visible-height, root.queue-rows.length * 62px);
+                horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+
+                VerticalLayout {
+                    width: parent.visible-width;
+                    spacing: 6px;
+                    for row in root.queue-rows: BatchQueueItem {
+                        width: parent.width;
+                        index: row.index;
+                        url: row.url;
+                        status: row.status;
+                        progress: row.progress;
+                        error: row.error;
+                        active: row.active;
+                    }
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; background: transparent; }
+
+            HorizontalLayout {
+                height: 34px;
+                alignment: end;
+                spacing: 8px;
+                ActionButton { label: root.started ? "Close" : "Cancel"; width: 86px; clicked => { root.close-window(); } }
+                if !root.started: ActionButton {
+                    label: "Add to Queue";
+                    width: 106px;
+                    enabled: root.urls-text != "";
+                    clicked => { root.queue-batch(root.urls-text, root.save-dir, root.extension-filter, root.sequential-mode); }
+                }
+                if !root.started: ActionButton {
+                    label: "Start Batch";
+                    primary: true;
+                    width: 112px;
+                    enabled: root.urls-text != "";
+                    clicked => { root.start-batch(root.urls-text, root.save-dir, root.extension-filter, root.sequential-mode); }
+                }
+            }
+        }
+    }
+}
+
+export component FilePropertiesWindow inherits Window {
+    title: "File Properties";
+    icon: AppAssets.icon;
+    width: 480px;
+    height: 390px;
+
+    in property <string> download-id;
+    in property <string> prop-filename;
+    in property <string> prop-file-type;
+    in property <string> prop-status;
+    in property <string> prop-size;
+    in property <string> prop-save-path;
+    in property <string> prop-url;
+    in property <string> prop-last-date;
+    in property <string> prop-result;
+    in property <bool> prop-can-open;
+
+    callback open-file(string);
+    callback copy-address(string);
+    callback close-window();
+
+    background: #181b1e;
+
+    VerticalLayout {
+        padding: 18px;
+        spacing: 0px;
+
+        // Header with icon and filename
+        HorizontalLayout {
+            spacing: 12px;
+            height: 44px;
+
+            Rectangle {
+                width: 36px;
+                height: 36px;
+                background: #1e6895;
+                border-width: 1px;
+                border-color: #3098d4;
+                border-radius: 5px;
+
+                Text {
+                    text: "\u{E8A5}";
+                    font-family: "Segoe MDL2 Assets";
+                    color: #ffffff;
+                    font-size: 19px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Text {
+                text: root.prop-filename;
+                color: #ffffff;
+                font-size: 16px;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        Rectangle { height: 1px; background: #3e464d; }
+        Rectangle { height: 14px; background: transparent; }
+
+        // Type
+        HorizontalLayout {
+            height: 24px;
+            spacing: 8px;
+            Text { text: "Type:"; color: #9ca8b2; font-size: 13px; width: 90px; vertical-alignment: center; }
+            Text { text: root.prop-file-type; color: #e8ecf0; font-size: 13px; vertical-alignment: center; overflow: elide; }
+        }
+        Rectangle { height: 4px; background: transparent; }
+
+        // Status
+        HorizontalLayout {
+            height: 24px;
+            spacing: 8px;
+            Text { text: "Status:"; color: #9ca8b2; font-size: 13px; width: 90px; vertical-alignment: center; }
+            Text { text: root.prop-status; color: #e8ecf0; font-size: 13px; vertical-alignment: center; overflow: elide; }
+        }
+        Rectangle { height: 4px; background: transparent; }
+
+        // Size
+        HorizontalLayout {
+            height: 24px;
+            spacing: 8px;
+            Text { text: "Size:"; color: #9ca8b2; font-size: 13px; width: 90px; vertical-alignment: center; }
+            Text { text: root.prop-size; color: #e8ecf0; font-size: 13px; vertical-alignment: center; overflow: elide; }
+        }
+        Rectangle { height: 10px; background: transparent; }
+
+        // Save To
+        HorizontalLayout {
+            height: 28px;
+            spacing: 8px;
+            Text { text: "Save To:"; color: #9ca8b2; font-size: 13px; width: 90px; vertical-alignment: center; }
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 28px;
+                background: #1e2226;
+                border-width: 1px;
+                border-color: #3a4148;
+                border-radius: 4px;
+                clip: true;
+
+                Text {
+                    text: root.prop-save-path;
+                    color: #e8ecf0;
+                    font-size: 12px;
+                    x: 8px;
+                    width: parent.width - 16px;
+                    height: parent.height;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+        Rectangle { height: 6px; background: transparent; }
+
+        // Address
+        HorizontalLayout {
+            height: 28px;
+            spacing: 8px;
+            Text { text: "Address:"; color: #9ca8b2; font-size: 13px; width: 90px; vertical-alignment: center; }
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 28px;
+                background: #1e2226;
+                border-width: 1px;
+                border-color: #3a4148;
+                border-radius: 4px;
+                clip: true;
+
+                Text {
+                    text: root.prop-url;
+                    color: #e8ecf0;
+                    font-size: 12px;
+                    x: 8px;
+                    width: parent.width - 16px;
+                    height: parent.height;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            Rectangle {
+                width: 58px;
+                height: 28px;
+                background: copy-touch.pressed ? #26313b : copy-touch.has-hover ? #30363c : #252a2f;
+                border-width: 1px;
+                border-color: #4b535a;
+                border-radius: 4px;
+                clip: true;
+
+                Text {
+                    text: "Copy";
+                    color: #f0f4f7;
+                    font-size: 12px;
+                    width: parent.width;
+                    height: parent.height;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                copy-touch := TouchArea {
+                    clicked => { root.copy-address(root.prop-url); }
+                }
+            }
+        }
+
+        Rectangle { height: 14px; background: transparent; }
+        Rectangle { height: 1px; background: #3e464d; }
+        Rectangle { height: 10px; background: transparent; }
+
+        // Last try date
+        HorizontalLayout {
+            height: 20px;
+            spacing: 4px;
+            Text { text: "Last try date:"; color: #8a9199; font-size: 12px; vertical-alignment: center; }
+            Text { text: root.prop-last-date; color: #d0d6dc; font-size: 12px; vertical-alignment: center; overflow: elide; }
+        }
+        Rectangle { height: 4px; background: transparent; }
+
+        // Result
+        HorizontalLayout {
+            height: 20px;
+            spacing: 4px;
+            Text { text: "Result:"; color: #8a9199; font-size: 12px; vertical-alignment: center; }
+            Text {
+                text: root.prop-result;
+                color: root.prop-result == "Complete" ? #4cba6a : #d4a04a;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        // Spacer
+        Rectangle { vertical-stretch: 1; background: transparent; }
+
+        // Buttons
+        HorizontalLayout {
+            height: 30px;
+            spacing: 12px;
+            alignment: end;
+
+            ActionButton {
+                label: "Open";
+                width: 90px;
+                primary: false;
+                enabled: root.prop-can-open;
+                clicked => { root.open-file(root.prop-save-path); }
+            }
+            ActionButton {
+                label: "OK";
+                width: 90px;
+                primary: true;
+                clicked => { root.close-window(); }
+            }
+        }
+    }
+}
+
+export component NativeSchedulerWindow inherits Window {
+    title: "Scheduler";
+    icon: AppAssets.icon;
+    preferred-width: 430px;
+    preferred-height: 350px;
+    min-width: 400px;
+    min-height: 330px;
+
+    in-out property <bool> schedule-enabled;
+    in-out property <bool> start-at-enabled: true;
+    in-out property <int> start-hour: 8;
+    in-out property <int> start-minute: 0;
+    in-out property <bool> start-pm: false;
+    in-out property <bool> stop-enabled: true;
+    in-out property <int> stop-hour: 11;
+    in-out property <int> stop-minute: 0;
+    in-out property <bool> stop-pm: true;
+    in-out property <string> active-tab: "Schedule";
+    in property <[DownloadRow]> queued-downloads;
+    in-out property <string> message;
+    callback save-schedule();
+    callback close-window();
+
+    background: #17191b;
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #1b1d1f;
+        border-width: 1px;
+        border-color: #454b50;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+
+            Text {
+                text: "Scheduler";
+                color: #ffffff;
+                font-size: 16px;
+                font-weight: 600;
+                height: 22px;
+            }
+
+            Rectangle {
+                height: 30px;
+                background: transparent;
+
+                HorizontalLayout {
+                    spacing: 0px;
+                    TimeSegmentButton {
+                        label: "Schedule";
+                        selected: root.active-tab == "Schedule";
+                        width: 92px;
+                        clicked => { root.active-tab = "Schedule"; }
+                    }
+                    TimeSegmentButton {
+                        label: "Files in queue";
+                        selected: root.active-tab == "Files";
+                        width: 128px;
+                        clicked => { root.active-tab = "Files"; }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+
+            if root.active-tab == "Schedule": Rectangle {
+                height: 174px;
+                background: #202326;
+                border-width: 1px;
+                border-color: #454b50;
+                border-radius: 4px;
+
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 12px;
+
+                    ToggleButton {
+                        label: "Enable scheduler";
+                        checked <=> root.schedule-enabled;
+                        width: 180px;
+                    }
+
+                    HorizontalLayout {
+                        height: 42px;
+                        spacing: 10px;
+                        ToggleButton { label: "Start queue"; checked <=> root.start-at-enabled; width: 96px; }
+                        TimePicker {
+                            label: "";
+                            width: 274px;
+                            hour <=> root.start-hour;
+                            minute <=> root.start-minute;
+                            pm <=> root.start-pm;
+                            opacity: root.start-at-enabled ? 1.0 : 0.45;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        height: 42px;
+                        spacing: 10px;
+                        ToggleButton { label: "Stop queue"; checked <=> root.stop-enabled; width: 96px; }
+                        TimePicker {
+                            label: "";
+                            width: 274px;
+                            hour <=> root.stop-hour;
+                            minute <=> root.stop-minute;
+                            pm <=> root.stop-pm;
+                            opacity: root.stop-enabled ? 1.0 : 0.45;
+                        }
+                    }
+                }
+            }
+
+            if root.active-tab == "Files": Rectangle {
+                height: 174px;
+                background: #202326;
+                border-width: 1px;
+                border-color: #454b50;
+                border-radius: 4px;
+                clip: true;
+
+                if root.queued-downloads.length == 0: Text {
+                    text: "No queued downloads.";
+                    color: #9ca8b2;
+                    font-size: 13px;
+                    width: parent.width;
+                    height: parent.height;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                if root.queued-downloads.length > 0: ScrollView {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
+                    viewport-width: self.visible-width;
+                    viewport-height: root.queued-downloads.length * 30px;
+                    horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                    vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+
+                    VerticalLayout {
+                        width: parent.visible-width;
+                        spacing: 0px;
+                        for row in root.queued-downloads: Rectangle {
+                            height: 30px;
+                            background: row.stripe ? #222528 : #1c1f22;
+                            border-width: 0px;
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 10px;
+                                Text { text: row.filename; color: #ffffff; font-size: 12px; width: 210px; height: parent.height; vertical-alignment: center; overflow: elide; }
+                                Text { text: row.size; color: #cfd8df; font-size: 12px; width: 74px; height: parent.height; vertical-alignment: center; overflow: elide; }
+                                Text { text: row.status; color: #d4a04a; font-size: 12px; width: 76px; height: parent.height; vertical-alignment: center; overflow: elide; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Text {
+                text: root.message;
+                color: #cfd8df;
+                font-size: 12px;
+                height: 18px;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                height: 32px;
+                spacing: 10px;
+                Rectangle { horizontal-stretch: 1; }
+                ActionButton { label: "Cancel"; width: 86px; clicked => { root.close-window(); } }
+                ActionButton { label: "Save"; width: 86px; primary: true; clicked => { root.save-schedule(); } }
+            }
+        }
+    }
+}
+
+// RichSchedulerWindowPrototype kept intentionally as a commented reference for
+// later. It had IDM-style tabs, weekday selection, retries, and completion
+// actions, but the current app uses the simpler start/stop scheduler above.
+
+export component NativeMain inherits Window {
+    title: "Velocity Download Manager";
+    icon: AppAssets.icon;
+    preferred-width: 1120px;
+    preferred-height: 610px;
+    min-width: 860px;
+    min-height: 460px;
+    forward-focus: keyboard-focus;
+
+    in property <[DownloadRow]> downloads;
+    in-out property <bool> show-options-dialog;
+    in-out property <bool> show-search-dialog;
+    in-out property <bool> categories-visible: true;
+    in-out property <string> pending-url;
+    in-out property <string> search-query;
+    in-out property <string> status-message;
+    in-out property <string> selected-category: "All Downloads";
+    in-out property <string> selected-download-id;
+    in-out property <string> selected-download-ids;
+    in-out property <int> selected-row-index: -1;
+    in-out property <int> selection-anchor-index: -1;
+    in-out property <string> active-menu;
+    in-out property <bool> menu-hot-tracking;
+    in-out property <bool> show-download-context-menu;
+    in-out property <string> context-download-id;
+    in-out property <string> context-download-status;
+    in-out property <length> context-menu-x;
+    in-out property <length> context-menu-y;
+    in-out property <bool> context-popup-pending;
+    callback add-url();
+    callback open-options();
+    callback category-selected(string);
+    callback download-selected(string);
+    callback resume-selected(string);
+    callback stop-selected(string);
+    callback delete-selected(string);
+    callback delete-selected-list(string);
+    callback menu-action(string);
+    callback download-context-action(string, string);
+    callback context-menu-state-changed(bool);
+    callback app-chrome-pointer-down();
+    callback search-updated(string);
+    callback download-double-clicked(string);
+    callback selection-request(string, int, bool, bool);
+    callback keyboard-selection-request(string, bool, bool);
+
+    background: #17191b;
+
+    function close-download-context-menu() {
+        root.show-download-context-menu = false;
+        root.context-popup-pending = false;
+        context-popup.close();
+        root.context-menu-state-changed(false);
+        root.context-download-id = "";
+        root.context-download-status = "";
+        root.context-menu-x = 0px;
+        root.context-menu-y = 0px;
+    }
+
+    function close-toolbar-menu() {
+        root.active-menu = "";
+        root.menu-hot-tracking = false;
+    }
+
+    function select-row(index: int) {
+        if root.downloads.length <= 0 {
+            root.keyboard-selection-request("clear", false, false);
+            return;
+        }
+        root.keyboard-selection-request("select-index:" + index, false, false);
+    }
+
+    function select-next-row() {
+        if root.downloads.length <= 0 { return; }
+        if root.selected-row-index < 0 {
+            root.select-row(0);
+        } else {
+            root.select-row(root.selected-row-index + 1);
+        }
+    }
+
+    function select-previous-row() {
+        if root.downloads.length <= 0 { return; }
+        if root.selected-row-index < 0 {
+            root.select-row(0);
+        } else {
+            root.select-row(root.selected-row-index - 1);
+        }
+    }
+
+    function keyboard-action(action: string) {
+        if action == "add" {
+            root.add-url();
+        } else if action == "find" {
+            root.show-search-dialog = true;
+        } else if action == "delete" {
+            root.delete-selected-list(root.selected-download-ids);
+        } else if action == "properties" {
+            root.download-double-clicked(root.selected-download-id);
+        } else if action == "status-window" {
+            root.download-context-action("show-download-window", root.selected-download-id);
+        } else if action == "resume" {
+            root.resume-selected(root.selected-download-id);
+        } else if action == "stop" {
+            root.stop-selected(root.selected-download-id);
+        }
+    }
+
+    context-popup-open-timer := Timer {
+        interval: 1ms;
+        running: root.context-popup-pending;
+        triggered => {
+            root.context-popup-pending = false;
+            context-popup.show();
+        }
+    }
+
+    keyboard-focus := FocusScope {
+        x: 0px;
+        y: 0px;
+        width: 0px;
+        height: 0px;
+
+        key-pressed(event) => {
+            if event.text == Key.DownArrow {
+                root.keyboard-selection-request("down", event.modifiers.shift, event.modifiers.control);
+                return accept;
+            } else if event.text == Key.UpArrow {
+                root.keyboard-selection-request("up", event.modifiers.shift, event.modifiers.control);
+                return accept;
+            } else if event.text == Key.PageDown {
+                root.keyboard-selection-request("page-down", event.modifiers.shift, event.modifiers.control);
+                return accept;
+            } else if event.text == Key.PageUp {
+                root.keyboard-selection-request("page-up", event.modifiers.shift, event.modifiers.control);
+                return accept;
+            } else if event.text == Key.Home {
+                root.keyboard-selection-request("home", event.modifiers.shift, event.modifiers.control);
+                return accept;
+            } else if event.text == Key.End {
+                root.keyboard-selection-request("end", event.modifiers.shift, event.modifiers.control);
+                return accept;
+            } else if event.text == Key.Delete {
+                root.keyboard-action("delete");
+                return accept;
+            } else if event.text == Key.Return {
+                root.keyboard-action("properties");
+                return accept;
+            } else if event.text == Key.Escape {
+                root.close-download-context-menu();
+                root.close-toolbar-menu();
+                return accept;
+            } else if event.modifiers.control && (event.text == "f" || event.text == "F") {
+                root.keyboard-action("find");
+                return accept;
+            } else if event.modifiers.control && (event.text == "n" || event.text == "N") {
+                root.keyboard-action("add");
+                return accept;
+            } else if event.modifiers.control && (event.text == "o" || event.text == "O") {
+                root.keyboard-action("status-window");
+                return accept;
+            } else if event.modifiers.control && (event.text == "a" || event.text == "A") {
+                root.keyboard-selection-request("select-all", false, true);
+                return accept;
+            } else if event.text == Key.Space {
+                root.keyboard-action("status-window");
+                return accept;
+            }
+            reject
+        }
+    }
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        background: #17191b;
+
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: 27px;
+            background: #17191b;
+            border-width: 1px;
+            border-color: #34383d;
+
+            HorizontalLayout {
+                width: parent.width;
+                height: parent.height;
+                alignment: start;
+                padding-left: 6px;
+                spacing: 0px;
+
+                MenuItem { label: "Tasks"; item-width: 58px; selected: root.active-menu == "Tasks"; hot-tracking: root.menu-hot-tracking; clicked(menu) => { if root.active-menu == menu { root.close-toolbar-menu(); } else { root.active-menu = menu; root.menu-hot-tracking = true; } } hovered(menu) => { root.active-menu = menu; } }
+                MenuItem { label: "File"; item-width: 48px; selected: root.active-menu == "File"; hot-tracking: root.menu-hot-tracking; clicked(menu) => { if root.active-menu == menu { root.close-toolbar-menu(); } else { root.active-menu = menu; root.menu-hot-tracking = true; } } hovered(menu) => { root.active-menu = menu; } }
+                MenuItem { label: "Downloads"; item-width: 82px; selected: root.active-menu == "Downloads"; hot-tracking: root.menu-hot-tracking; clicked(menu) => { if root.active-menu == menu { root.close-toolbar-menu(); } else { root.active-menu = menu; root.menu-hot-tracking = true; } } hovered(menu) => { root.active-menu = menu; } }
+                MenuItem { label: "View"; item-width: 54px; selected: root.active-menu == "View"; hot-tracking: root.menu-hot-tracking; clicked(menu) => { if root.active-menu == menu { root.close-toolbar-menu(); } else { root.active-menu = menu; root.menu-hot-tracking = true; } } hovered(menu) => { root.active-menu = menu; } }
+                MenuItem { label: "Help"; item-width: 52px; selected: root.active-menu == "Help"; hot-tracking: root.menu-hot-tracking; clicked(menu) => { if root.active-menu == menu { root.close-toolbar-menu(); } else { root.active-menu = menu; root.menu-hot-tracking = true; } } hovered(menu) => { root.active-menu = menu; } }
+            }
+        }
+
+        Rectangle {
+            x: 0px;
+            y: 27px;
+            width: parent.width;
+            height: 64px;
+            background: #242628;
+            border-width: 1px;
+            border-color: #363b40;
+
+            HorizontalLayout {
+                width: parent.width;
+                height: parent.height;
+                alignment: start;
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 0px;
+
+                ToolbarButton { icon: "\u{E710}"; label: "Add URL"; clicked => { root.add-url(); } }
+                ToolbarButton { icon: "\u{E768}"; label: "Resume"; clicked => { root.resume-selected(root.selected-download-id); } }
+                ToolbarButton { icon: "\u{E71A}"; label: "Stop"; clicked => { root.stop-selected(root.selected-download-id); } }
+                ToolbarButton { icon: "\u{E769}"; label: "Stop All"; clicked => { root.menu-action("stop-all"); } }
+                ToolbarButton { icon: "\u{E74D}"; label: "Delete"; clicked => { root.delete-selected-list(root.selected-download-ids); } }
+                ToolbarButton { icon: "\u{E74D}"; label: "Delete C."; clicked => { root.menu-action("delete-completed"); } }
+                ToolbarButton { icon: "\u{E713}"; label: "Options"; clicked => { root.open-options(); } }
+                ToolbarButton { icon: "\u{E916}"; label: "Scheduler"; clicked => { root.menu-action("scheduler"); } }
+                ToolbarButton { icon: "\u{E892}"; label: "Start Qu."; clicked => { root.menu-action("start-queue"); } }
+                ToolbarButton { icon: "\u{E8BB}"; label: "Stop Qu."; clicked => { root.menu-action("stop-queue"); } }
+            }
+        }
+
+        content-area := Rectangle {
+            x: 0px;
+            y: 91px;
+            width: parent.width;
+            height: max(0px, parent.height - 91px);
+            background: #17191b;
+
+            if root.categories-visible: Rectangle {
+                x: 9px;
+                y: 9px;
+                width: 214px;
+                height: max(0px, parent.height - 18px);
+                background: #1b1d1f;
+                border-width: 1px;
+                border-color: #454b50;
+                border-radius: 6px;
+                clip: true;
+
+                VerticalLayout {
+                    width: parent.width;
+                    height: parent.height;
+                    padding: 5px;
+                    spacing: 2px;
+
+                    Rectangle {
+                        height: 28px;
+                        background: transparent;
+                        border-width: 1px;
+                        border-color: transparent;
+
+                        Text {
+                            text: "Categories";
+                            color: #ffffff;
+                            font-size: 16px;
+                            x: 4px;
+                            width: parent.width - 12px;
+                            height: parent.height;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+
+                    CategoryRow { icon: "\u{E8B7}"; label: "All Downloads"; indent: 0px; selected: root.selected-category == "All Downloads"; clicked => { root.selected-category = "All Downloads"; root.category-selected("All Downloads"); } }
+                    CategoryRow { icon: "\u{E8B7}"; label: "Compressed"; indent: 15px; selected: root.selected-category == "Compressed"; clicked => { root.selected-category = "Compressed"; root.category-selected("Compressed"); } }
+                    CategoryRow { icon: "\u{E8A5}"; label: "Documents"; indent: 15px; selected: root.selected-category == "Documents"; clicked => { root.selected-category = "Documents"; root.category-selected("Documents"); } }
+                    CategoryRow { icon: "\u{E8D6}"; label: "Music"; indent: 15px; selected: root.selected-category == "Music"; clicked => { root.selected-category = "Music"; root.category-selected("Music"); } }
+                    CategoryRow { icon: "\u{E756}"; label: "Programs"; indent: 15px; selected: root.selected-category == "Programs"; clicked => { root.selected-category = "Programs"; root.category-selected("Programs"); } }
+                    CategoryRow { icon: "\u{E714}"; label: "Video"; indent: 15px; selected: root.selected-category == "Video"; clicked => { root.selected-category = "Video"; root.category-selected("Video"); } }
+                    CategoryRow { icon: "\u{E7C3}"; label: "Unfinished"; indent: 0px; selected: root.selected-category == "Unfinished"; clicked => { root.selected-category = "Unfinished"; root.category-selected("Unfinished"); } }
+                    CategoryRow { icon: "\u{E73E}"; label: "Finished"; indent: 0px; selected: root.selected-category == "Finished"; clicked => { root.selected-category = "Finished"; root.category-selected("Finished"); } }
+                    CategoryRow { icon: "\u{E8A1}"; label: "Grabber projects"; indent: 0px; selected: root.selected-category == "Grabber projects"; clicked => { root.selected-category = "Grabber projects"; root.category-selected("Grabber projects"); } }
+                    CategoryRow { icon: "\u{E8FD}"; label: "Queues"; indent: 0px; selected: root.selected-category == "Queues"; clicked => { root.selected-category = "Queues"; root.category-selected("Queues"); } }
+                }
+            }
+
+            table-panel := Rectangle {
+                x: root.categories-visible ? 231px : 9px;
+                y: 9px;
+                width: max(620px, parent.width - (root.categories-visible ? 240px : 18px));
+                height: max(0px, parent.height - 18px);
+                background: #1d1f21;
+                border-width: 1px;
+                border-color: #454b50;
+                border-radius: 6px;
+                clip: true;
+
+                HorizontalLayout {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: 32px;
+                    spacing: 0px;
+                    FlexHeaderCell { label: "File Name"; }
+                    HeaderCell { label: "Size"; cell-width: 96px; }
+                    HeaderCell { label: "Status"; cell-width: 112px; }
+                    HeaderCell { label: "Time left"; cell-width: 108px; }
+                    HeaderCell { label: "Transfer rate"; cell-width: 134px; }
+                    HeaderCell { label: "Category"; cell-width: 120px; }
+                }
+
+                scroll := ScrollView {
+                    x: 0px;
+                    y: 32px;
+                    width: parent.width;
+                    height: max(0px, parent.height - 32px);
+                    viewport-width: scroll.visible-width;
+                    viewport-height: max(scroll.visible-height, root.downloads.length * 38px);
+                    horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                    vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+
+                    VerticalLayout {
+                        width: scroll.visible-width;
+                        spacing: 0px;
+
+                        for row[index] in root.downloads: TableRow {
+                            download-id: row.id;
+                            filename: row.filename;
+                            size: row.size;
+                            status: row.status;
+                            time-left: row.time_left;
+                            rate: row.rate;
+                            category: row.category;
+                            progress: row.progress;
+                            stripe: row.stripe;
+                            selected: row.selected;
+                            clicked(id, ctrl, shift) => {
+                                root.selection-request(id, index, ctrl, shift);
+                            }
+                            double-clicked(id) => {
+                                root.selection-request(id, index, false, false);
+                                root.download-double-clicked(id);
+                            }
+                            context-action(action, id) => {
+                                root.selection-request(id, index, false, false);
+                                root.download-context-action(action, id);
+                            }
+                            context-request(id, status, x, y) => {
+                                root.selection-request(id, index, false, false);
+                                root.context-download-id = id;
+                                root.context-download-status = status;
+                                root.context-menu-x = x;
+                                root.context-menu-y = y;
+                                root.show-download-context-menu = true;
+                                root.context-menu-state-changed(true);
+                                context-popup.close();
+                                root.context-popup-pending = false;
+                                root.context-popup-pending = true;
+                            }
+                        }
+
+                        if root.downloads.length == 0: Rectangle {
+                            width: scroll.visible-width;
+                            height: 80px;
+                            Text {
+                                text: "No downloads";
+                                color: #8c8c8c;
+                                font-size: 13px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.active-menu != "": Rectangle {
+        x: 0px;
+        y: 27px;
+        width: root.width;
+        height: max(0px, root.height - 27px);
+        background: transparent;
+
+        TouchArea {
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.close-toolbar-menu();
+                }
+            }
+        }
+    }
+
+    context-popup := PopupWindow {
+        x: root.context-menu-x;
+        y: root.context-menu-y;
+        width: 230px;
+        height: 389px;
+        close-policy: close-on-click-outside;
+        forward-focus: menu-focus;
+
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: transparent;
+
+            DownloadContextMenu {
+                x: 2px;
+                y: 2px;
+                status: root.context-download-status;
+                selected(action) => {
+                    root.download-context-action(action, root.context-download-id);
+                    root.close-download-context-menu();
+                }
+            }
+
+            menu-focus := FocusScope {
+                width: parent.width;
+                height: parent.height;
+                focus-changed-event => {
+                    if !self.has-focus {
+                        root.close-download-context-menu();
+                    }
+                }
+            }
+        }
+    }
+
+    if root.show-download-context-menu: Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: 91px;
+        background: transparent;
+
+        TouchArea {
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.app-chrome-pointer-down();
+                    root.close-download-context-menu();
+                }
+            }
+        }
+    }
+
+    if root.active-menu == "Tasks": Rectangle {
+        x: 6px;
+        y: 27px;
+        width: 214px;
+        height: 84px;
+
+        Rectangle { x: 5px; y: 5px; width: 206px; height: parent.height; background: #00000060; border-radius: 2px; }
+        MenuDropdown {
+            x: 0px;
+            y: 0px;
+            height: parent.height;
+            menu: "Tasks";
+            action(action) => {
+                root.close-toolbar-menu();
+                if action == "add-download" {
+                    root.add-url();
+                }
+                root.menu-action(action);
+            }
+        }
+    }
+
+    if root.active-menu == "File": Rectangle {
+        x: 64px;
+        y: 27px;
+        width: 214px;
+        height: 113px;
+
+        Rectangle { x: 5px; y: 5px; width: 206px; height: parent.height; background: #00000060; border-radius: 2px; }
+        MenuDropdown {
+            x: 0px;
+            y: 0px;
+            height: parent.height;
+            menu: "File";
+            action(action) => { root.close-toolbar-menu(); root.menu-action(action); }
+        }
+    }
+
+    if root.active-menu == "Downloads": Rectangle {
+        x: 112px;
+        y: 27px;
+        width: 214px;
+        height: 84px;
+
+        Rectangle { x: 5px; y: 5px; width: 206px; height: parent.height; background: #00000060; border-radius: 2px; }
+        MenuDropdown {
+            x: 0px;
+            y: 0px;
+            height: parent.height;
+            menu: "Downloads";
+            action(action) => {
+                root.close-toolbar-menu();
+                if action == "find" {
+                    root.show-search-dialog = true;
+                }
+                root.menu-action(action);
+            }
+        }
+    }
+
+    if root.active-menu == "View": Rectangle {
+        x: 194px;
+        y: 27px;
+        width: 214px;
+        height: 169px;
+
+        Rectangle { x: 5px; y: 5px; width: 206px; height: parent.height; background: #00000060; border-radius: 2px; }
+        MenuDropdown {
+            x: 0px;
+            y: 0px;
+            height: parent.height;
+            menu: "View";
+            categories-visible: root.categories-visible;
+            action(action) => {
+                root.close-toolbar-menu();
+                if action == "toggle-categories" {
+                    root.categories-visible = !root.categories-visible;
+                }
+                root.menu-action(action);
+            }
+        }
+    }
+
+    if root.active-menu == "Help": Rectangle {
+        x: 248px;
+        y: 27px;
+        width: 214px;
+        height: 112px;
+
+        Rectangle { x: 5px; y: 5px; width: 206px; height: parent.height; background: #00000060; border-radius: 2px; }
+        MenuDropdown {
+            x: 0px;
+            y: 0px;
+            height: parent.height;
+            menu: "Help";
+            action(action) => { root.close-toolbar-menu(); root.menu-action(action); }
+        }
+    }
+
+    if root.show-search-dialog: Rectangle {
+        width: root.width;
+        height: root.height;
+        background: #00000070;
+
+        Rectangle {
+            width: 430px;
+            height: 160px;
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            background: #292929;
+            border-width: 1px;
+            border-color: #777777;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+
+                Text { text: "Find downloads"; color: #ffffff; font-size: 15px; height: 22px; }
+                LineEdit { text <=> root.search-query; placeholder-text: "Search file name, status, or category"; height: 32px; }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    Button { text: "Clear"; clicked => { root.search-query = ""; root.search-updated(""); root.show-search-dialog = false; } }
+                    Button { text: "Cancel"; clicked => { root.show-search-dialog = false; } }
+                    Button { text: "Find"; clicked => { root.search-updated(root.search-query); root.show-search-dialog = false; } }
+                }
+            }
+        }
+    }
+
+    if root.show-options-dialog: Rectangle {
+        width: root.width;
+        height: root.height;
+        background: #00000080;
+
+        Rectangle {
+            width: 420px;
+            height: 150px;
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            background: #2c2c2c;
+            border-width: 1px;
+            border-color: #8c8c8c;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 14px;
+
+                Text { text: "Options"; color: #ffffff; font-size: 15px; }
+                Text { text: "Native settings panels will be moved here next."; color: #cfcfcf; font-size: 12px; }
+
+                HorizontalLayout {
+                    alignment: end;
+                    Button { text: "Close"; clicked => { root.show-options-dialog = false; } }
+                }
+            }
+        }
+    }
+}

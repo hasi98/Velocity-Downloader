@@ -1,44 +1,109 @@
-# Velocity Downloader
+# Velocity Download Manager
 
-Velocity Downloader is a Windows-focused download manager built with Tauri, Rust, React, and TypeScript. It is designed for fast segmented downloads, browser capture, persistent download history, and an IDM-style native desktop workflow.
+Velocity Download Manager is a Windows-focused native download manager built with Rust and Slint. Version 2.0 moves the app away from the old webview/React UI and into a native Slint interface for a lighter, faster IDM-style desktop workflow.
 
 Download Windows Installer: https://github.com/hasi98/Velocity-Downloader/releases/latest
 
+## Highlights
+
+- Native Rust + Slint desktop UI with no React/webview frontend.
+- Multi-connection segmented downloads with pause, resume, stop, retry, and queue support.
+- YouTube and media downloads through bundled `yt-dlp`.
+- FFmpeg is downloaded on demand only when media merging is needed.
+- Browser extension integration for Chromium browsers.
+- Persistent download history and restart recovery.
+- Scheduler and batch queue tools.
+- Tray icon with hide-on-close behavior.
+- SHA256-verified update checks through GitHub Releases.
+
+## Screenshots
+
+### Main Window
+
+![Velocity Download Manager main window](docs/screenshots/main-window.png)
+
+### Download Progress
+
+![Velocity Download Manager compact progress window](docs/screenshots/download-progress.png)
+
+### Connection Details
+
+![Velocity Download Manager connection details](docs/screenshots/download-details.png)
+
 ## Features
 
-- Multi-segment downloads with pause, resume, stop, and retry-ready task state.
-- IDM-style Add Download window with automatic URL analysis.
-- Hidden pre-download/prefetch after analysis, with final save only after user confirmation.
-- Compact download progress window by default, with More/Less segment details.
-- Per-download speed limit controls and global speed limit support for new downloads.
-- Persistent download history after app restart.
-- Resume support after restart using `.meta` files and verified temp segments.
-- Automatic duplicate filename handling such as `file (1).zip`.
-- File rename before starting a download.
-- Download categories by file type.
-- Batch download window with pasted URLs, imported URL lists, extension filtering, and queue modes.
-- Browser extension integration for Chrome, Edge, Brave, Opera, and Vivaldi-style Chromium browsers.
+### Download Engine
+
+- Segmented downloads with configurable connections per file.
+- Global connection cap to avoid too many simultaneous network streams.
+- Single-stream fallback for servers that do not support ranges.
+- Pause, resume, stop, redownload, retry-ready state, and remove.
+- Per-download speed limiter and global speed limiter.
+- Duplicate filename handling such as `file (1).zip`.
+- Temporary segment files are cleaned after successful assembly.
+- `.meta` files are used to restore incomplete downloads after restart.
+
+### Media Downloads
+
+- YouTube/video URL analysis using `yt-dlp`.
+- Quality picker with available resolutions/codecs.
+- Selected quality is passed to `yt-dlp` with audio merge fallback.
+- Real-time `yt-dlp` progress is shown in the main list.
+- FFmpeg is fetched on demand for video/audio merging instead of being bundled into the installer.
+
+### App UI
+
+- Native IDM-style main window with categories and sortable download history.
+- Separate Add Download, Batch Download, Scheduler, Options, File Properties, Download Progress, and Download Complete windows.
+- Add Download window automatically analyzes pasted URLs.
+- Download progress window supports compact mode and connection details.
+- Download Complete window can open the file, open with Windows, or open the folder.
+- Keyboard selection support in the history list, including arrows, Delete, Ctrl select, Shift select, and Ctrl+A.
+- Right-click context menu for common file/download actions.
+
+### Queues, Batch, and Scheduler
+
+- Add single downloads to the scheduler queue.
+- Batch downloads from pasted URLs or imported URL lists.
+- Batch mode supports all-at-once or one-by-one.
+- Scheduled batch downloads remember their selected mode.
+- Scheduler starts only scheduled queued items, not normal paused downloads.
+- Scheduler includes a queued-files tab.
+
+### Browser Extension
+
+- Manifest V3 extension for Chromium browsers such as Chrome, Edge, Brave, Opera, and Vivaldi-style browsers.
 - Browser download interception with cookies, referer, and user-agent forwarding.
-- "Download with Velocity" right-click browser menu.
-- Browser fallback if Velocity cannot accept an intercepted download.
-- Tray icon support with hide-on-close behavior.
-- Optional "Start with Windows" setting.
-- Signed auto-update support through Tauri updater and GitHub Releases.
-- Native child-window placement so Add Download, Settings, Batch, Extension, and progress windows open over the main app.
-- Updated app, taskbar, titlebar, tray, installer, and web favicon icons.
+- "Download with VDM" context menu.
+- Small video overlay button for supported video pages, with a close button.
+- Browser fallback behavior when VDM cannot accept a download.
+
+### Windows Integration
+
+- App hides to system tray when the main window is closed.
+- Tray menu includes Open, Add new download, Add new batch download, and Exit.
+- Optional Start with Windows setting.
+- Installer updates bundled extension files.
+- App icon is used for titlebars, taskbar, tray, installer, and extension assets.
+
+### Updates
+
+- GitHub Releases based update checks.
+- `latest.json` includes the release version, installer URL, and SHA256 hash.
+- The app verifies the downloaded installer hash before running an update.
 
 ## Tech Stack
 
-- Frontend: React, TypeScript, Vite, CSS
-- Desktop shell: Tauri 2
+- Native UI: Slint
 - Core downloader: Rust
+- Packaging: Tauri bundler / NSIS
 - Browser extension: Manifest V3 JavaScript
+- Media engine: `yt-dlp` with optional FFmpeg
 - Local app bridge: HTTP server on `127.0.0.1:41420`
 
 ## Requirements
 
 - Windows 10/11
-- WebView2 Runtime
 - Node.js LTS
 - Rust stable toolchain
 - Visual Studio Build Tools with the Windows MSVC toolchain
@@ -58,23 +123,18 @@ Install dependencies:
 npm install
 ```
 
-Run the app in development mode:
-
-```bash
-npm run tauri dev
-```
-
-Build the frontend only:
-
-```bash
-npm run build
-```
-
-Check the Rust backend:
+Run the native app in development mode:
 
 ```bash
 cd src-tauri
-cargo check
+cargo run --bin velocity-native
+```
+
+Check the Rust app:
+
+```bash
+cd src-tauri
+cargo check --bin velocity-native
 ```
 
 ## Production Build
@@ -82,69 +142,70 @@ cargo check
 Create the Windows executable and installers:
 
 ```bash
-npm run tauri build
+npm run tauri -- build
 ```
 
-Updater release builds must be signed with the private updater key:
+Generate the update manifest after every release build:
 
 ```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw "$HOME\.tauri\velocity-downloader.key"
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<your-updater-key-password>"
-npm run tauri build
-npm run updater:manifest -- --tag=vX.Y.Z
+npm run updater:manifest
 ```
 
 Build outputs are generated here:
 
-- Standalone executable: `src-tauri/target/release/velocity-downloader.exe`
-- NSIS installer: `src-tauri/target/release/bundle/nsis/`
-- MSI installer: `src-tauri/target/release/bundle/msi/`
+- Standalone executable: `src-tauri/target/release/velocity-native.exe`
+- NSIS installer: `src-tauri/target/release/bundle/nsis/Velocity Download Manager_2.0.0_x64-setup.exe`
+- MSI installer: `src-tauri/target/release/bundle/msi/Velocity Download Manager_2.0.0_x64_en-US.msi`
 - Updater manifest: `src-tauri/target/release/bundle/latest.json`
 
-For GitHub Releases, upload the NSIS installer, its `.sig` file, and `latest.json`. The app checks:
+For GitHub Releases, upload the NSIS installer and `latest.json`. The app checks:
 
 ```text
 https://github.com/hasi98/Velocity-Downloader/releases/latest/download/latest.json
 ```
 
-## Browser Extension
+## Browser Extension Installation
 
-The extension files are in the `extension` directory.
+The extension files are installed with the app and are also available in the `extension` directory.
 
 Manual installation:
 
-1. Open your Chromium browser extension page, for example `chrome://extensions`, `edge://extensions`, or `brave://extensions`.
+1. Open your browser extensions page:
+   - Chrome: `chrome://extensions`
+   - Edge: `edge://extensions`
+   - Brave: `brave://extensions`
 2. Enable Developer mode.
 3. Click Load unpacked.
-4. Select the `extension` folder from this project.
-5. Keep Velocity Downloader running so the extension can reach `http://127.0.0.1:41420`.
-
-The extension can intercept normal browser downloads and can also send links through the "Download with Velocity" context menu.
+4. Select the installed VDM extension folder or the repository `extension` folder.
+5. Keep Velocity Download Manager running so the extension can send links to the local app.
 
 ## App Behavior
 
 - Closing the main window hides the app to the tray instead of quitting.
-- Use the tray menu to show Velocity Downloader again or quit completely.
-- When Start with Windows is enabled in Settings, the app starts minimized in the background.
-- Incomplete downloads are restored from `.meta` files on startup when possible.
-- Completed downloads remain visible in history after restarting the app.
+- Use the tray menu to reopen the app or exit completely.
+- Start with Windows can be enabled from Options.
+- Completed downloads remain visible after restarting.
+- Incomplete downloads are restored from `.meta` files when possible.
+- Some sites require the browser extension because cookies, referer, and user-agent headers are needed.
 
 ## Project Structure
 
 ```text
 velocity-downloader/
+  bin/                    Bundled helper binaries such as yt-dlp
   extension/              Browser extension
   logo/                   Source logo assets
-  public/                 Frontend public assets
-  src/                    React/TypeScript frontend
-  src-tauri/              Rust/Tauri backend
+  scripts/                Release helper scripts
+  src-tauri/              Rust native app, downloader, and installer config
   src-tauri/icons/        Generated app icons
+  src-tauri/src/          Rust app source
+  src-tauri/ui/           Slint UI files
 ```
 
 ## Notes
 
-- Some protected streaming or blob-based media URLs may not be directly downloadable yet.
-- Some sites require valid cookies, referer, and user-agent headers; the extension forwards these when possible.
+- Protected streaming, DRM, or blob-only media may not be downloadable.
+- FFmpeg is required for some video/audio merges and is installed on demand.
 - If Windows shows an old taskbar icon after updating, unpin the old app and pin the rebuilt executable again because Windows caches pinned icons.
 
 ## License

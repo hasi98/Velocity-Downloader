@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Runtime helper downloads / debug output
+bin/ffmpeg.exe
+bin/ffprobe.exe
+src-tauri/velocity-native-debug.err
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

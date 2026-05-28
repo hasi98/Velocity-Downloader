@@ -63,7 +63,11 @@ impl StateManager {
             .await
             .map_err(|e| format!("Failed to read dir: {}", e))?;
 
-        while let Some(entry) = entries.next_entry().await.map_err(|e| format!("Dir entry error: {}", e))? {
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| format!("Dir entry error: {}", e))?
+        {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("meta") {
                 if let Ok(task) = Self::load_state(&path.to_string_lossy()).await {
@@ -181,14 +185,14 @@ impl StateManager {
     /// Save app settings to disk
     pub fn save_settings(settings: &crate::models::AppSettings) -> Result<(), String> {
         let path = Self::settings_path().ok_or("Failed to determine settings path")?;
-        
+
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
 
         let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
         std::fs::write(path, json).map_err(|e| e.to_string())?;
-        
+
         Ok(())
     }
 
