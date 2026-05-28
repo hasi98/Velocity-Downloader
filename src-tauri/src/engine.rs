@@ -66,6 +66,7 @@ impl DownloadEngine {
     }
 
     pub fn new_with_config(config: DownloadEngineConfig) -> Self {
+        let _large_file_mode = config.large_file_mode;
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"));
         headers.insert(
@@ -94,18 +95,14 @@ impl DownloadEngine {
         );
 
         // Build a client with cookie store and browser-like headers
-        let mut builder = Client::builder()
+        let client = Client::builder()
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .cookie_store(true)
             .default_headers(headers)
             .redirect(reqwest::redirect::Policy::none()) // We manually handle it to preserve explicit headers
-            .connect_timeout(std::time::Duration::from_secs(30));
-
-        if !config.large_file_mode {
-            builder = builder.timeout(std::time::Duration::from_secs(300));
-        }
-
-        let client = builder.build().expect("Failed to create HTTP client");
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("Failed to create HTTP client");
 
         Self { client }
     }
@@ -899,8 +896,8 @@ impl DownloadEngine {
         let mut total_downloaded: u64 = 0;
         let mut current_speed: f64 = 0.0;
         let mut last_real_data = Instant::now();
-        let read_timeout_secs = if large_file_mode { 120 } else { 10 };
-        let stall_timeout_secs = if large_file_mode { 90 } else { 15 };
+        let read_timeout_secs = if large_file_mode { 120 } else { 45 };
+        let stall_timeout_secs = if large_file_mode { 90 } else { 60 };
 
         loop {
             if *cancel_token.lock().await {
