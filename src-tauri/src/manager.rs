@@ -399,21 +399,17 @@ impl DownloadManager {
                         (total_size, filename, false, Vec::new())
                     }
                 }
-                Err(direct_error) => match crate::media::probe_media_url(
-                    &url,
-                    &ctx,
-                    app_handle.as_ref(),
-                )
-                .await
-                {
-                    Ok(info) => (
-                        info.filesize.unwrap_or(0),
-                        info.filename,
-                        true,
-                        info.formats,
-                    ),
-                    Err(_) => return Err(direct_error),
-                },
+                Err(direct_error) => {
+                    match crate::media::probe_media_url(&url, &ctx, app_handle.as_ref()).await {
+                        Ok(info) => (
+                            info.filesize.unwrap_or(0),
+                            info.filename,
+                            true,
+                            info.formats,
+                        ),
+                        Err(_) => return Err(direct_error),
+                    }
+                }
             }
         };
 
@@ -422,7 +418,8 @@ impl DownloadManager {
         let base_dir = settings.default_download_dir.clone();
         drop(settings);
 
-        let save_dir = std::path::PathBuf::from(base_dir).join(Self::category_for_filename(&filename));
+        let save_dir =
+            std::path::PathBuf::from(base_dir).join(Self::category_for_filename(&filename));
         let save_path = Self::unique_save_path(&save_dir.to_string_lossy(), &filename)
             .to_string_lossy()
             .to_string();
@@ -464,40 +461,49 @@ impl DownloadManager {
                 .map(|format| !format.trim().is_empty())
                 .unwrap_or(false)
             && expected_size.unwrap_or_default() > 0;
-        let (mut total_size, supports_range, content_type, filename, download_kind) = if media_candidate
-            && can_use_media_analysis
-        {
-            (
-                expected_size.unwrap_or(0),
-                false,
-                Some("video/media".to_string()),
-                filename_override.clone().unwrap_or_else(|| "media.mp4".to_string()),
-                DownloadKind::Media,
-            )
-        } else if media_candidate
-        {
-            let info = crate::media::probe_media_url(&url, &ctx, app_handle.as_ref()).await?;
-            (
-                info.filesize.unwrap_or(0),
-                false,
-                info.content_type,
-                info.filename,
-                DownloadKind::Media,
-            )
-        } else {
-            match self.engine.probe_url(&url, &ctx).await {
-                Ok((total_size, supports_range, content_type, filename)) => {
-                    if crate::media::is_html_content_type(&content_type) {
-                        if let Ok(info) =
-                            crate::media::probe_media_url(&url, &ctx, app_handle.as_ref()).await
-                        {
-                            (
-                                info.filesize.unwrap_or(0),
-                                false,
-                                info.content_type,
-                                info.filename,
-                                DownloadKind::Media,
-                            )
+        let (mut total_size, supports_range, content_type, filename, download_kind) =
+            if media_candidate && can_use_media_analysis {
+                (
+                    expected_size.unwrap_or(0),
+                    false,
+                    Some("video/media".to_string()),
+                    filename_override
+                        .clone()
+                        .unwrap_or_else(|| "media.mp4".to_string()),
+                    DownloadKind::Media,
+                )
+            } else if media_candidate {
+                let info = crate::media::probe_media_url(&url, &ctx, app_handle.as_ref()).await?;
+                (
+                    info.filesize.unwrap_or(0),
+                    false,
+                    info.content_type,
+                    info.filename,
+                    DownloadKind::Media,
+                )
+            } else {
+                match self.engine.probe_url(&url, &ctx).await {
+                    Ok((total_size, supports_range, content_type, filename)) => {
+                        if crate::media::is_html_content_type(&content_type) {
+                            if let Ok(info) =
+                                crate::media::probe_media_url(&url, &ctx, app_handle.as_ref()).await
+                            {
+                                (
+                                    info.filesize.unwrap_or(0),
+                                    false,
+                                    info.content_type,
+                                    info.filename,
+                                    DownloadKind::Media,
+                                )
+                            } else {
+                                (
+                                    total_size,
+                                    supports_range,
+                                    content_type,
+                                    filename,
+                                    DownloadKind::Direct,
+                                )
+                            }
                         } else {
                             (
                                 total_size,
@@ -507,30 +513,21 @@ impl DownloadManager {
                                 DownloadKind::Direct,
                             )
                         }
-                    } else {
-                        (
-                            total_size,
-                            supports_range,
-                            content_type,
-                            filename,
-                            DownloadKind::Direct,
-                        )
+                    }
+                    Err(direct_error) => {
+                        match crate::media::probe_media_url(&url, &ctx, app_handle.as_ref()).await {
+                            Ok(info) => (
+                                info.filesize.unwrap_or(0),
+                                false,
+                                info.content_type,
+                                info.filename,
+                                DownloadKind::Media,
+                            ),
+                            Err(_) => return Err(direct_error),
+                        }
                     }
                 }
-                Err(direct_error) => {
-                    match crate::media::probe_media_url(&url, &ctx, app_handle.as_ref()).await {
-                        Ok(info) => (
-                            info.filesize.unwrap_or(0),
-                            false,
-                            info.content_type,
-                            info.filename,
-                            DownloadKind::Media,
-                        ),
-                        Err(_) => return Err(direct_error),
-                    }
-                }
-            }
-        };
+            };
         if download_kind == DownloadKind::Media {
             if let Some(size) = expected_size.filter(|size| *size > 0) {
                 total_size = size;
@@ -981,6 +978,7 @@ impl DownloadManager {
                     callback.clone(),
                     task_speed_limit.clone(),
                     speed_limiter.clone(),
+                    false,
                 )
                 .await;
                 drop(_connection_permit);
@@ -1107,14 +1105,11 @@ impl DownloadManager {
                     let mut retries = 0;
                     let max_retries = MAX_DOWNLOAD_RETRIES;
                     loop {
-                        let _connection_permit = match connection_semaphore_for_seg
-                            .clone()
-                            .acquire_owned()
-                            .await
-                        {
-                            Ok(permit) => permit,
-                            Err(_) => return Err("Connection limiter closed".to_string()),
-                        };
+                        let _connection_permit =
+                            match connection_semaphore_for_seg.clone().acquire_owned().await {
+                                Ok(permit) => permit,
+                                Err(_) => return Err("Connection limiter closed".to_string()),
+                            };
                         let res = DownloadEngine::download_segment(
                             client.clone(),
                             url.clone(),

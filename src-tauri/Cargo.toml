@@ -1,6 +1,6 @@
 [package]
 name = "velocity-downloader"
-version = "2.0.0"
+version = "2.0.1"
 description = "A high-performance multi-threaded download manager"
 authors = ["Backend Tech inc"]
 edition = "2021"

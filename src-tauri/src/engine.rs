@@ -55,8 +55,17 @@ pub struct DownloadEngine {
     client: Client,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DownloadEngineConfig {
+    pub large_file_mode: bool,
+}
+
 impl DownloadEngine {
     pub fn new() -> Self {
+        Self::new_with_config(DownloadEngineConfig::default())
+    }
+
+    pub fn new_with_config(config: DownloadEngineConfig) -> Self {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"));
         headers.insert(
@@ -85,15 +94,18 @@ impl DownloadEngine {
         );
 
         // Build a client with cookie store and browser-like headers
-        let client = Client::builder()
+        let mut builder = Client::builder()
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .cookie_store(true)
             .default_headers(headers)
             .redirect(reqwest::redirect::Policy::none()) // We manually handle it to preserve explicit headers
-            .timeout(std::time::Duration::from_secs(300))
-            .connect_timeout(std::time::Duration::from_secs(30))
-            .build()
-            .expect("Failed to create HTTP client");
+            .connect_timeout(std::time::Duration::from_secs(30));
+
+        if !config.large_file_mode {
+            builder = builder.timeout(std::time::Duration::from_secs(300));
+        }
+
+        let client = builder.build().expect("Failed to create HTTP client");
 
         Self { client }
     }
@@ -815,6 +827,7 @@ impl DownloadEngine {
         progress_callback: Arc<dyn Fn(u64, u64, f64) + Send + Sync>,
         task_speed_limit: Arc<RwLock<Option<u64>>>,
         speed_limiter: Arc<SharedSpeedLimiter>,
+        large_file_mode: bool,
     ) -> Result<u64, String> {
         let response = Self::fetch_with_redirect(&client, &url, reqwest::Method::GET, &ctx, None)
             .await
@@ -886,6 +899,8 @@ impl DownloadEngine {
         let mut total_downloaded: u64 = 0;
         let mut current_speed: f64 = 0.0;
         let mut last_real_data = Instant::now();
+        let read_timeout_secs = if large_file_mode { 120 } else { 10 };
+        let stall_timeout_secs = if large_file_mode { 90 } else { 15 };
 
         loop {
             if *cancel_token.lock().await {
@@ -894,20 +909,32 @@ impl DownloadEngine {
             }
 
             // Secondary stall detector
-            if last_real_data.elapsed().as_secs() >= 15 {
-                log::warn!("Single download stalled: no real data for 15 seconds");
-                return Err("Stalled (no data for 15s)".to_string());
+            if last_real_data.elapsed().as_secs() >= stall_timeout_secs {
+                log::warn!(
+                    "Single download stalled: no real data for {} seconds",
+                    stall_timeout_secs
+                );
+                return Err(format!("Stalled (no data for {}s)", stall_timeout_secs));
             }
 
-            let chunk_or_timeout =
-                tokio::time::timeout(std::time::Duration::from_secs(10), stream.next()).await;
+            let chunk_or_timeout = tokio::time::timeout(
+                std::time::Duration::from_secs(read_timeout_secs),
+                stream.next(),
+            )
+            .await;
 
             let chunk_result = match chunk_or_timeout {
                 Ok(Some(res)) => res,
                 Ok(None) => break, // Stream completed successfully
                 Err(_) => {
-                    log::warn!("Single download read timed out after 10 seconds");
-                    return Err("Read timeout after 10s of no data".to_string());
+                    log::warn!(
+                        "Single download read timed out after {} seconds",
+                        read_timeout_secs
+                    );
+                    return Err(format!(
+                        "Read timeout after {}s of no data",
+                        read_timeout_secs
+                    ));
                 }
             };
 

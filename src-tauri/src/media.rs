@@ -203,12 +203,13 @@ pub async fn probe_media_url(
     }
 
     let Some(json) = best_json else {
-        return Err(last_error.unwrap_or_else(|| "yt-dlp did not return media information".to_string()));
+        return Err(
+            last_error.unwrap_or_else(|| "yt-dlp did not return media information".to_string())
+        );
     };
 
     Ok(media_info_from_json(&json, can_merge))
 }
-
 
 async fn probe_media_json_once(
     url: &str,
@@ -569,7 +570,10 @@ fn media_quality_options(json: &Value, can_merge: bool) -> Vec<MediaFormatOption
     options
 }
 
-fn video_option_from_format(format: &Value, best_audio_size: Option<u64>) -> Option<MediaFormatOption> {
+fn video_option_from_format(
+    format: &Value,
+    best_audio_size: Option<u64>,
+) -> Option<MediaFormatOption> {
     let id = format.get("format_id")?.as_str()?.to_string();
     let height = read_u64(format.get("height"))?;
     let ext = format
@@ -696,13 +700,7 @@ fn codec_label(value: Option<&Value>) -> String {
     value
         .and_then(Value::as_str)
         .filter(|codec| !codec.trim().is_empty() && *codec != "none")
-        .map(|codec| {
-            codec
-                .split('.')
-                .next()
-                .unwrap_or(codec)
-                .to_uppercase()
-        })
+        .map(|codec| codec.split('.').next().unwrap_or(codec).to_uppercase())
         .unwrap_or_else(|| "UNKNOWN".to_string())
 }
 
@@ -824,10 +822,7 @@ fn build_video_fallback_selector(format_id: &str, height: Option<u64>) -> String
     let requested = if format_id.is_empty() {
         "bestvideo+bestaudio".to_string()
     } else {
-        format!(
-            "{}+bestaudio[ext=m4a]/{}+bestaudio",
-            format_id, format_id
-        )
+        format!("{}+bestaudio[ext=m4a]/{}+bestaudio", format_id, format_id)
     };
 
     if let Some(height) = height {
@@ -1322,9 +1317,11 @@ async fn update_media_progress(
         } else if let Some(percent) = progress.percent {
             let total = task.total_size;
             if total > 0 {
-                Some(((percent / 100.0) * total as f64)
-                    .round()
-                    .clamp(0.0, total as f64) as u64)
+                Some(
+                    ((percent / 100.0) * total as f64)
+                        .round()
+                        .clamp(0.0, total as f64) as u64,
+                )
             } else {
                 None
             }

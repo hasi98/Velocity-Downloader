@@ -1381,6 +1381,7 @@ export component NativeAddDownloadWindow inherits Window {
     in-out property <bool> analysis-pending;
     in-out property <bool> ffmpeg-required;
     in-out property <bool> ffmpeg-installing;
+    in-out property <bool> ffmpeg-failed;
     in-out property <float> ffmpeg-progress;
     in-out property <string> ffmpeg-message;
 
@@ -1434,6 +1435,7 @@ export component NativeAddDownloadWindow inherits Window {
                     root.can-start = false;
                     root.analysis-message = "";
                     root.ffmpeg-required = false;
+                    root.ffmpeg-failed = false;
                     root.ffmpeg-message = "";
                     root.analysis-pending = text != "";
                 }
@@ -1653,7 +1655,7 @@ export component NativeAddDownloadWindow inherits Window {
                     clip: true;
 
                     Text {
-                        text: "Download FFmpeg";
+                        text: root.ffmpeg-failed ? "Retry" : "Download FFmpeg";
                         color: #ffffff;
                         font-size: 12px;
                         width: parent.width;

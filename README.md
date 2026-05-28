@@ -154,8 +154,8 @@ npm run updater:manifest
 Build outputs are generated here:
 
 - Standalone executable: `src-tauri/target/release/velocity-native.exe`
-- NSIS installer: `src-tauri/target/release/bundle/nsis/Velocity Download Manager_2.0.0_x64-setup.exe`
-- MSI installer: `src-tauri/target/release/bundle/msi/Velocity Download Manager_2.0.0_x64_en-US.msi`
+- NSIS installer: `src-tauri/target/release/bundle/nsis/Velocity Download Manager_2.0.1_x64-setup.exe`
+- MSI installer: `src-tauri/target/release/bundle/msi/Velocity Download Manager_2.0.1_x64_en-US.msi`
 - Updater manifest: `src-tauri/target/release/bundle/latest.json`
 
 For GitHub Releases, upload the NSIS installer and `latest.json`. The app checks:
