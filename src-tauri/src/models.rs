@@ -231,6 +231,8 @@ pub struct AppSettings {
     pub speed_limit_bps: Option<u64>,
     #[serde(default)]
     pub start_on_boot: bool,
+    #[serde(default)]
+    pub extension_prompt_seen: bool,
 }
 
 fn default_segments() -> usize {
@@ -252,6 +254,7 @@ impl Default for AppSettings {
             temp_download_dir: None,
             speed_limit_bps: None,
             start_on_boot: false,
+            extension_prompt_seen: false,
         }
     }
 }

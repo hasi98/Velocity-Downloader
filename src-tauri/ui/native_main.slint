@@ -2599,6 +2599,7 @@ export component NativeMain inherits Window {
     in property <[DownloadRow]> downloads;
     in-out property <bool> show-options-dialog;
     in-out property <bool> show-search-dialog;
+    in-out property <bool> show-extension-install-prompt;
     in-out property <bool> categories-visible: true;
     in-out property <string> pending-url;
     in-out property <string> search-query;
@@ -2632,6 +2633,8 @@ export component NativeMain inherits Window {
     callback download-double-clicked(string);
     callback selection-request(string, int, bool, bool);
     callback keyboard-selection-request(string, bool, bool);
+    callback install-extension-prompt();
+    callback dismiss-extension-prompt();
 
     background: #17191b;
 
@@ -3161,6 +3164,64 @@ export component NativeMain inherits Window {
                     Button { text: "Clear"; clicked => { root.search-query = ""; root.search-updated(""); root.show-search-dialog = false; } }
                     Button { text: "Cancel"; clicked => { root.show-search-dialog = false; } }
                     Button { text: "Find"; clicked => { root.search-updated(root.search-query); root.show-search-dialog = false; } }
+                }
+            }
+        }
+    }
+
+    if root.show-extension-install-prompt: Rectangle {
+        width: root.width;
+        height: root.height;
+        background: #00000078;
+
+        Rectangle {
+            width: 460px;
+            height: 190px;
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            background: #242629;
+            border-width: 1px;
+            border-color: #59616a;
+            border-radius: 6px;
+            clip: true;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 12px;
+
+                Text {
+                    text: "Install the browser extension";
+                    color: #ffffff;
+                    font-size: 17px;
+                    font-weight: 600;
+                    height: 24px;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: "To catch browser downloads and show video download buttons, install the VDM browser extension.";
+                    color: #d4dbe0;
+                    font-size: 13px;
+                    height: 44px;
+                    wrap: word-wrap;
+                }
+
+                Text {
+                    text: "You can do this from Options > Browser Extension.";
+                    color: #aeb8c2;
+                    font-size: 12px;
+                    height: 20px;
+                    overflow: elide;
+                }
+
+                Rectangle { vertical-stretch: 1; background: transparent; }
+
+                HorizontalLayout {
+                    height: 32px;
+                    spacing: 10px;
+                    Rectangle { horizontal-stretch: 1; }
+                    ActionButton { label: "Not now"; width: 92px; clicked => { root.dismiss-extension-prompt(); } }
+                    ActionButton { label: "Install Extension"; primary: true; width: 132px; clicked => { root.install-extension-prompt(); } }
                 }
             }
         }

@@ -356,6 +356,36 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    ui.on_install_extension_prompt({
+        let weak = weak.clone();
+        let manager = manager.clone();
+        let runtime = runtime.clone();
+        move || {
+            mark_extension_prompt_seen(manager.clone(), runtime.clone());
+            if let Some(ui) = weak.upgrade() {
+                ui.set_show_extension_install_prompt(false);
+            }
+            open_settings_window_with_tab(
+                manager.clone(),
+                runtime.clone(),
+                weak.clone(),
+                Some("Browser Extension".to_string()),
+            );
+        }
+    });
+
+    ui.on_dismiss_extension_prompt({
+        let weak = weak.clone();
+        let manager = manager.clone();
+        let runtime = runtime.clone();
+        move || {
+            mark_extension_prompt_seen(manager.clone(), runtime.clone());
+            if let Some(ui) = weak.upgrade() {
+                ui.set_show_extension_install_prompt(false);
+            }
+        }
+    });
+
     ui.on_context_menu_state_changed({
         let menu_open = menu_open.clone();
         move |open| {
@@ -673,6 +703,9 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     ui.show()?;
+    if !runtime.block_on(manager.get_settings()).extension_prompt_seen {
+        ui.set_show_extension_install_prompt(true);
+    }
     #[cfg(target_os = "windows")]
     set_slint_window_icons(&ui.window());
     #[cfg(target_os = "windows")]
@@ -4752,6 +4785,7 @@ fn show_settings_window(
                             segments.as_str(),
                             speed_limit.as_str(),
                             start_on_boot,
+                            crate::state::StateManager::load_settings().extension_prompt_seen,
                         ) {
                             Ok(settings) => {
                                 set_settings_message("Saving...");
@@ -5088,6 +5122,20 @@ fn sync_startup_setting_on_launch(
     });
 }
 
+fn mark_extension_prompt_seen(
+    manager: Arc<DownloadManager>,
+    runtime: Arc<tokio::runtime::Runtime>,
+) {
+    runtime.spawn(async move {
+        let mut settings = manager.get_settings().await;
+        if settings.extension_prompt_seen {
+            return;
+        }
+        settings.extension_prompt_seen = true;
+        manager.update_settings(settings).await;
+    });
+}
+
 #[cfg(target_os = "windows")]
 fn set_windows_startup_enabled(enabled: bool) -> Result<(), String> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -5118,6 +5166,7 @@ fn settings_from_inputs(
     segments: &str,
     speed_limit: &str,
     start_on_boot: bool,
+    extension_prompt_seen: bool,
 ) -> Result<AppSettings, String> {
     let default_dir = default_dir.trim();
     if default_dir.is_empty() {
@@ -5152,6 +5201,7 @@ fn settings_from_inputs(
         temp_download_dir,
         speed_limit_bps,
         start_on_boot,
+        extension_prompt_seen,
     })
 }
 
