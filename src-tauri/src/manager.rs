@@ -55,13 +55,8 @@ impl DownloadManager {
             if !seen.insert(task.id.clone()) {
                 continue;
             }
-            task.status = DownloadStatus::Completed;
-            task.speed_bps = 0.0;
-            task.eta_seconds = 0.0;
-            for segment in &mut task.segments {
-                segment.speed_bps = 0.0;
-                segment.status = SegmentStatus::Completed;
-            }
+            Self::normalize_completed_history_task(&mut task);
+            let _ = StateManager::upsert_history(&task);
             restored.insert(task.id.clone(), Arc::new(RwLock::new(task)));
         }
 
@@ -72,7 +67,8 @@ impl DownloadManager {
 
         for root in roots {
             for mut task in StateManager::scan_for_resumable_sync(&root) {
-                if task.status == DownloadStatus::Completed {
+                if task.status == DownloadStatus::Completed || seen.contains(&task.id) {
+                    let _ = std::fs::remove_file(task.meta_file_path());
                     continue;
                 }
                 seen.insert(task.id.clone());
@@ -82,6 +78,41 @@ impl DownloadManager {
         }
 
         restored
+    }
+
+    fn normalize_completed_history_task(task: &mut DownloadTask) {
+        task.status = DownloadStatus::Completed;
+        task.speed_bps = 0.0;
+        task.eta_seconds = 0.0;
+        task.error = None;
+        task.scheduled_queue = false;
+
+        if let Ok(metadata) = std::fs::metadata(&task.save_path) {
+            let len = metadata.len();
+            if len > 0 {
+                task.total_size = len;
+                task.downloaded = len;
+            }
+        } else if task.total_size > 0 {
+            task.downloaded = task.total_size;
+        } else if task.downloaded > 0 {
+            task.total_size = task.downloaded;
+        }
+
+        if task.segments.is_empty() && task.total_size > 0 {
+            let mut segment = Segment::new(0, 0, task.total_size.saturating_sub(1), &task.temp_dir());
+            segment.downloaded = task.total_size;
+            segment.status = SegmentStatus::Completed;
+            task.segments.push(segment);
+        }
+
+        for segment in &mut task.segments {
+            segment.speed_bps = 0.0;
+            segment.status = SegmentStatus::Completed;
+            if segment.downloaded < segment.total_size() {
+                segment.downloaded = segment.total_size();
+            }
+        }
     }
 
     fn verify_restored_segments(task: &mut DownloadTask) {
@@ -724,11 +755,28 @@ impl DownloadManager {
             tokens.insert(download_id.to_string(), cancel_token.clone());
         }
 
-        // Update status
+        // Update status. Media downloads and non-range single-stream downloads are
+        // restarted as a fresh process, so stale byte counters from a cancelled
+        // attempt must not block the next progress updates.
         {
             let mut task = task_arc.write().await;
+            let restarting_fresh_stream = task.status == DownloadStatus::Paused
+                && (task.download_kind == DownloadKind::Media
+                    || !task.supports_range
+                    || task.segments.len() <= 1);
+            if restarting_fresh_stream {
+                task.downloaded = 0;
+                task.speed_bps = 0.0;
+                task.eta_seconds = 0.0;
+                for segment in &mut task.segments {
+                    segment.downloaded = 0;
+                    segment.speed_bps = 0.0;
+                    segment.status = SegmentStatus::Pending;
+                }
+            }
             task.status = DownloadStatus::Downloading;
             task.updated_at = Utc::now();
+            let _ = StateManager::save_state(&task).await;
         }
 
         *self.active_count.lock().await += 1;
@@ -1266,6 +1314,32 @@ impl DownloadManager {
         }
 
         Ok(())
+    }
+
+    /// Move an unfinished download into the scheduler queue without starting it.
+    pub async fn move_to_scheduled_queue(&self, download_id: &str) -> Result<(), String> {
+        {
+            let tokens = self.cancel_tokens.read().await;
+            if let Some(token) = tokens.get(download_id) {
+                *token.lock().await = true;
+            }
+        }
+
+        let tasks = self.tasks.read().await;
+        let Some(task_arc) = tasks.get(download_id) else {
+            return Err("Download not found".to_string());
+        };
+
+        let mut task = task_arc.write().await;
+        if task.status == DownloadStatus::Completed {
+            return Err("Completed downloads cannot be moved to the queue.".to_string());
+        }
+
+        task.status = DownloadStatus::Queued;
+        task.scheduled_queue = true;
+        task.speed_bps = 0.0;
+        task.updated_at = Utc::now();
+        StateManager::save_state(&task).await
     }
 
     /// Resume a paused download

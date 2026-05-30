@@ -827,8 +827,8 @@ fn build_video_fallback_selector(format_id: &str, height: Option<u64>) -> String
 
     if let Some(height) = height {
         format!(
-            "{}/bestvideo[height<={}][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<={}]+bestaudio/bestvideo+bestaudio/best",
-            requested, height, height
+            "{}/bestvideo[height<={}][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<={}]+bestaudio/best[height<={}]",
+            requested, height, height, height
         )
     } else {
         format!("{}/bestvideo+bestaudio/best", requested)

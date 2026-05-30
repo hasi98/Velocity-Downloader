@@ -10,6 +10,7 @@ use axum::{extract::State, http::Method, routing::post, Json, Router};
 use chrono::{Datelike, Local, Timelike};
 use engine::DownloadEngineConfig;
 use engine::{DownloadEngine, SharedSpeedLimiter};
+use futures_util::StreamExt;
 use manager::DownloadManager;
 use models::{AppSettings, DownloadStatus, DownloadTask, HttpContext};
 use serde::{Deserialize, Serialize};
@@ -23,8 +24,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tower_http::cors::{Any, CorsLayer};
+use tokio::io::AsyncWriteExt;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 #[cfg(target_os = "windows")]
@@ -58,6 +63,8 @@ thread_local! {
     static LAST_PUBLISHED_DETAILS: RefCell<HashMap<String, DownloadDetailView>> = RefCell::new(HashMap::new());
     static LAST_COMPLETION_STATES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     static SETTINGS_WINDOW: RefCell<Option<NativeSettingsWindow>> = const { RefCell::new(None) };
+    static ABOUT_WINDOW: RefCell<Option<NativeAboutWindow>> = const { RefCell::new(None) };
+    static GLOBAL_SPEED_LIMIT_WINDOW: RefCell<Option<NativeGlobalSpeedLimiterWindow>> = const { RefCell::new(None) };
     static ADD_DOWNLOAD_WINDOW: RefCell<Option<NativeAddDownloadWindow>> = const { RefCell::new(None) };
     static ADD_DOWNLOAD_CONTEXT: RefCell<HttpContext> = RefCell::new(HttpContext::default());
     static BATCH_DOWNLOAD_WINDOW: RefCell<Option<NativeBatchDownloadWindow>> = const { RefCell::new(None) };
@@ -91,6 +98,8 @@ const WM_SETICON: u32 = 0x0080;
 const ICON_SMALL: usize = 0;
 #[cfg(target_os = "windows")]
 const ICON_BIG: usize = 1;
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[cfg(target_os = "windows")]
 struct MainWindowHook {
@@ -261,6 +270,7 @@ impl Default for SchedulerConfig {
 
 fn main() -> Result<(), slint::PlatformError> {
     env_logger::init();
+    let started_from_windows_startup = std::env::args().any(|arg| arg == "--startup");
 
     let ui = NativeMain::new()?;
     let manager = Arc::new(DownloadManager::new());
@@ -274,12 +284,14 @@ fn main() -> Result<(), slint::PlatformError> {
     let search_query = Arc::new(Mutex::new(String::new()));
     let sort_mode = Arc::new(Mutex::new("date".to_string()));
     let menu_open = Arc::new(Mutex::new(false));
+    let last_row_click: Arc<Mutex<Option<(String, Instant)>>> = Arc::new(Mutex::new(None));
     let refresh_notify = Arc::new(tokio::sync::Notify::new());
     let _ = REFRESH_NOTIFY.set(refresh_notify.clone());
     let scheduler_config = Arc::new(Mutex::new(SchedulerConfig::default()));
     let _ = SCHEDULER_CONFIG.set(scheduler_config.clone());
     let weak = ui.as_weak();
     media::log_ffmpeg_availability(None);
+    cleanup_downloaded_update_installers();
     sync_startup_setting_on_launch(manager.clone(), runtime.clone());
     sync_extension_files_on_startup();
     start_extension_api(
@@ -387,6 +399,32 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    ui.on_view_update_prompt({
+        let weak = weak.clone();
+        let manager = manager.clone();
+        let runtime = runtime.clone();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_show_update_prompt(false);
+            }
+            open_settings_window_with_tab(
+                manager.clone(),
+                runtime.clone(),
+                weak.clone(),
+                Some("Updates".to_string()),
+            );
+        }
+    });
+
+    ui.on_dismiss_update_prompt({
+        let weak = weak.clone();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_show_update_prompt(false);
+            }
+        }
+    });
+
     ui.on_context_menu_state_changed({
         let menu_open = menu_open.clone();
         move |open| {
@@ -453,8 +491,48 @@ fn main() -> Result<(), slint::PlatformError> {
 
     ui.on_selection_request({
         let weak = weak.clone();
+        let manager = manager.clone();
+        let runtime = runtime.clone();
+        let last_row_click = last_row_click.clone();
         move |id, index, ctrl, shift| {
-            update_selection_from_request(weak.clone(), id.to_string(), index, ctrl, shift);
+            let id = id.to_string();
+            let should_open_properties = if !ctrl && !shift && !id.is_empty() {
+                let now = Instant::now();
+                if let Ok(mut last) = last_row_click.lock() {
+                    let matched = last
+                        .as_ref()
+                        .map(|(last_id, time)| {
+                            last_id == &id && now.duration_since(*time) <= Duration::from_millis(550)
+                        })
+                        .unwrap_or(false);
+                    *last = Some((id.clone(), now));
+                    matched
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            update_selection_from_request(weak.clone(), id.clone(), index, ctrl, shift);
+            if should_open_properties {
+                open_file_properties_for_id(
+                    id,
+                    manager.clone(),
+                    runtime.clone(),
+                    weak.clone(),
+                );
+            }
+        }
+    });
+
+    ui.on_context_selection_request({
+        let weak = weak.clone();
+        let last_row_click = last_row_click.clone();
+        move |id, index| {
+            if let Ok(mut last) = last_row_click.lock() {
+                *last = None;
+            }
+            update_selection_from_request(weak.clone(), id.to_string(), index, false, false);
         }
     });
 
@@ -503,7 +581,7 @@ fn main() -> Result<(), slint::PlatformError> {
             runtime.spawn(async move {
                 let result = manager_for_task.resume_download(&id, None).await;
                 match result {
-                    Ok(()) => wake_refresh_loop(),
+                    Ok(()) => pulse_refresh_loop(runtime_for_refresh.clone()),
                     Err(error) => {
                         set_status(weak_for_task.clone(), format!("Resume failed: {}", error));
                     }
@@ -704,12 +782,20 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     ui.show()?;
-    if !runtime
+    let should_show_extension_prompt = !runtime
         .block_on(manager.get_settings())
-        .extension_prompt_seen
-    {
+        .extension_prompt_seen;
+    if should_show_extension_prompt && !started_from_windows_startup {
         ui.set_show_extension_install_prompt(true);
     }
+    if started_from_windows_startup {
+        let _ = ui.hide();
+    }
+    start_update_check_on_launch(
+        weak.clone(),
+        runtime.clone(),
+        !should_show_extension_prompt && !started_from_windows_startup,
+    );
     #[cfg(target_os = "windows")]
     set_slint_window_icons(&ui.window());
     #[cfg(target_os = "windows")]
@@ -1412,7 +1498,7 @@ fn handle_menu_action(
             );
             set_status(weak, "Open Options > Updates to check for releases.");
         }
-        "about" => set_status(weak, "Velocity Download Manager 2.0.0 native UI"),
+        "about" => show_about_window(weak),
         "homepage" => {
             open_url("https://github.com/hasi98/velocity-downloader");
             set_status(weak, "Opening project homepage.");
@@ -1490,6 +1576,24 @@ fn handle_download_context_action(
             search_query,
             sort_mode,
         ),
+        "move-queue" => move_selected_to_queue(
+            id,
+            manager,
+            runtime,
+            weak,
+            selected_category,
+            search_query,
+            sort_mode,
+        ),
+        "delete-queue" => remove_selected_from_queue(
+            id,
+            manager,
+            runtime,
+            weak,
+            selected_category,
+            search_query,
+            sort_mode,
+        ),
         "refresh-address" => {
             set_status(
                 weak,
@@ -1499,6 +1603,247 @@ fn handle_download_context_action(
         "properties" => open_file_properties_for_id(id, manager, runtime, weak),
         _ => {}
     }
+}
+
+fn show_about_window(main_weak: slint::Weak<NativeMain>) {
+    let _ = slint::invoke_from_event_loop(move || {
+        ABOUT_WINDOW.with(|about_window| {
+            let mut about_window = about_window.borrow_mut();
+            if about_window.is_none() {
+                let Ok(window) = NativeAboutWindow::new() else {
+                    set_status(main_weak.clone(), "Could not open About window.");
+                    return;
+                };
+                window.set_version(env!("CARGO_PKG_VERSION").into());
+
+                #[cfg(target_os = "windows")]
+                set_slint_window_icons(&window.window());
+
+                window.on_close_about(|| {
+                    ABOUT_WINDOW.with(|about_window| {
+                        if let Some(window) = about_window.borrow().as_ref() {
+                            let _ = window.hide();
+                        }
+                    });
+                });
+
+                window.on_titlebar_drag_requested({
+                    let window_weak = window.as_weak();
+                    move || {
+                        if let Some(window) = window_weak.upgrade() {
+                            window.window().with_winit_window(|winit_window| {
+                                let _ = winit_window.drag_window();
+                            });
+                        }
+                    }
+                });
+
+                window.on_open_homepage(|| {
+                    open_url("https://github.com/hasi98/velocity-downloader");
+                });
+
+                *about_window = Some(window);
+            }
+
+            if let Some(window) = about_window.as_ref() {
+                window.set_version(env!("CARGO_PKG_VERSION").into());
+                center_about_window(&main_weak, window);
+                let _ = window.show();
+                #[cfg(target_os = "windows")]
+                set_slint_window_icons(&window.window());
+            }
+        });
+    });
+}
+
+fn center_about_window(main_weak: &slint::Weak<NativeMain>, window: &NativeAboutWindow) {
+    let Some(main) = main_weak.upgrade() else {
+        return;
+    };
+
+    let main_window = main.window();
+    let about_window = window.window();
+    let main_pos = main_window.position();
+    let main_size = main_window.size();
+    let about_size = about_window.size();
+
+    let about_width = if about_size.width > 0 {
+        about_size.width as i32
+    } else {
+        (430.0 * about_window.scale_factor()) as i32
+    };
+    let about_height = if about_size.height > 0 {
+        about_size.height as i32
+    } else {
+        (166.0 * about_window.scale_factor()) as i32
+    };
+
+    let x = main_pos.x + ((main_size.width as i32 - about_width) / 2).max(0);
+    let y = main_pos.y + ((main_size.height as i32 - about_height) / 2).max(0);
+    about_window.set_position(PhysicalPosition::new(x, y));
+}
+
+fn open_global_speed_limiter_window(
+    manager: Arc<DownloadManager>,
+    runtime: Arc<tokio::runtime::Runtime>,
+    main_weak: slint::Weak<NativeMain>,
+) {
+    let manager_for_settings = manager.clone();
+    let runtime_for_settings = runtime.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        GLOBAL_SPEED_LIMIT_WINDOW.with(|speed_window| {
+            let mut speed_window = speed_window.borrow_mut();
+            if speed_window.is_none() {
+                let Ok(window) = NativeGlobalSpeedLimiterWindow::new() else {
+                    set_status(main_weak.clone(), "Could not open speed limiter.");
+                    return;
+                };
+
+                #[cfg(target_os = "windows")]
+                set_slint_window_icons(&window.window());
+
+                window.on_close_window(|| {
+                    GLOBAL_SPEED_LIMIT_WINDOW.with(|speed_window| {
+                        if let Some(window) = speed_window.borrow().as_ref() {
+                            let _ = window.hide();
+                        }
+                    });
+                });
+
+                window.on_titlebar_drag_requested({
+                    let window_weak = window.as_weak();
+                    move || {
+                        if let Some(window) = window_weak.upgrade() {
+                            window.window().with_winit_window(|winit_window| {
+                                let _ = winit_window.drag_window();
+                            });
+                        }
+                    }
+                });
+
+                window.on_apply_limit({
+                    let manager = manager.clone();
+                    let runtime = runtime.clone();
+                    let main_weak = main_weak.clone();
+                    let window_weak = window.as_weak();
+                    move |value| {
+                        let limit = match parse_speed_limit_kib(value.as_str()) {
+                            Ok(limit) => limit,
+                            Err(error) => {
+                                if let Some(window) = window_weak.upgrade() {
+                                    window.set_message(error.into());
+                                }
+                                return;
+                            }
+                        };
+
+                        let manager = manager.clone();
+                        let main_weak = main_weak.clone();
+                        let window_weak = window_weak.clone();
+                        runtime.spawn(async move {
+                            let mut settings = manager.get_settings().await;
+                            settings.speed_limit_bps = limit;
+                            manager.update_settings(settings).await;
+                            let message = match limit {
+                                Some(limit_bps) => format!("Global limit is on at {} KB/s.", limit_bps / 1024),
+                                None => "Global speed limiter is off.".to_string(),
+                            };
+                            set_status(main_weak, message.clone());
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(window) = window_weak.upgrade() {
+                                    window.set_limiter_active(limit.is_some());
+                                    window.set_message(message.into());
+                                }
+                            });
+                        });
+                    }
+                });
+
+                window.on_clear_limit({
+                    let manager = manager.clone();
+                    let runtime = runtime.clone();
+                    let main_weak = main_weak.clone();
+                    let window_weak = window.as_weak();
+                    move || {
+                        let manager = manager.clone();
+                        let main_weak = main_weak.clone();
+                        let window_weak = window_weak.clone();
+                        runtime.spawn(async move {
+                            let mut settings = manager.get_settings().await;
+                            settings.speed_limit_bps = None;
+                            manager.update_settings(settings).await;
+                            set_status(main_weak, "Global speed limiter is off.");
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(window) = window_weak.upgrade() {
+                                    window.set_limit_text(SharedString::default());
+                                    window.set_limiter_active(false);
+                                    window.set_message("Global speed limiter is off.".into());
+                                }
+                            });
+                        });
+                    }
+                });
+
+                *speed_window = Some(window);
+            }
+
+            if let Some(window) = speed_window.as_ref() {
+                let window_weak = window.as_weak();
+                let manager = manager_for_settings.clone();
+                runtime_for_settings.spawn(async move {
+                    let settings = manager.get_settings().await;
+                    let limit = settings.speed_limit_bps;
+                    let text = limit.map(|value| (value / 1024).to_string()).unwrap_or_default();
+                    let message = if let Some(limit_bps) = limit {
+                        format!("Global limit is on at {} KB/s.", limit_bps / 1024)
+                    } else {
+                        "Global speed limiter is off.".to_string()
+                    };
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(window) = window_weak.upgrade() {
+                            window.set_limit_text(text.into());
+                            window.set_limiter_active(limit.is_some());
+                            window.set_message(message.into());
+                        }
+                    });
+                });
+                center_global_speed_limiter_window(&main_weak, window);
+                let _ = window.show();
+                #[cfg(target_os = "windows")]
+                set_slint_window_icons(&window.window());
+            }
+        });
+    });
+}
+
+fn center_global_speed_limiter_window(
+    main_weak: &slint::Weak<NativeMain>,
+    window: &NativeGlobalSpeedLimiterWindow,
+) {
+    let Some(main) = main_weak.upgrade() else {
+        return;
+    };
+
+    let main_window = main.window();
+    let speed_window = window.window();
+    let main_pos = main_window.position();
+    let main_size = main_window.size();
+    let speed_size = speed_window.size();
+
+    let speed_width = if speed_size.width > 0 {
+        speed_size.width as i32
+    } else {
+        (430.0 * speed_window.scale_factor()) as i32
+    };
+    let speed_height = if speed_size.height > 0 {
+        speed_size.height as i32
+    } else {
+        (210.0 * speed_window.scale_factor()) as i32
+    };
+
+    let x = main_pos.x + ((main_size.width as i32 - speed_width) / 2).max(0);
+    let y = main_pos.y + ((main_size.height as i32 - speed_height) / 2).max(0);
+    speed_window.set_position(PhysicalPosition::new(x, y));
 }
 
 fn open_selected_file(
@@ -1533,6 +1878,83 @@ fn open_selected_folder(
             }
             None => set_status(main_weak, "Download not found."),
         }
+    });
+}
+
+fn move_selected_to_queue(
+    id: String,
+    manager: Arc<DownloadManager>,
+    runtime: Arc<tokio::runtime::Runtime>,
+    main_weak: slint::Weak<NativeMain>,
+    selected_category: Arc<Mutex<String>>,
+    search_query: Arc<Mutex<String>>,
+    sort_mode: Arc<Mutex<String>>,
+) {
+    if id.is_empty() {
+        set_status(main_weak, "Select a download first.");
+        return;
+    }
+
+    let manager_for_task = manager.clone();
+    let runtime_for_refresh = runtime.clone();
+    runtime.spawn(async move {
+        match manager_for_task.move_to_scheduled_queue(&id).await {
+            Ok(()) => {
+                set_status(main_weak.clone(), "Moved download to scheduler queue.");
+                wake_refresh_loop();
+            }
+            Err(error) => set_status(main_weak.clone(), format!("Move to queue failed: {}", error)),
+        }
+
+        refresh_download_rows(
+            main_weak,
+            manager_for_task,
+            runtime_for_refresh,
+            selected_category,
+            search_query,
+            sort_mode,
+        );
+    });
+}
+
+fn remove_selected_from_queue(
+    id: String,
+    manager: Arc<DownloadManager>,
+    runtime: Arc<tokio::runtime::Runtime>,
+    main_weak: slint::Weak<NativeMain>,
+    selected_category: Arc<Mutex<String>>,
+    search_query: Arc<Mutex<String>>,
+    sort_mode: Arc<Mutex<String>>,
+) {
+    if id.is_empty() {
+        set_status(main_weak, "Select a download first.");
+        return;
+    }
+
+    let manager_for_task = manager.clone();
+    let runtime_for_refresh = runtime.clone();
+    runtime.spawn(async move {
+        match manager_for_task.pause_download(&id).await {
+            Ok(()) => {
+                set_status(main_weak.clone(), "Removed download from scheduler queue.");
+                wake_refresh_loop();
+            }
+            Err(error) => {
+                set_status(
+                    main_weak.clone(),
+                    format!("Delete from queue failed: {}", error),
+                );
+            }
+        }
+
+        refresh_download_rows(
+            main_weak,
+            manager_for_task,
+            runtime_for_refresh,
+            selected_category,
+            search_query,
+            sort_mode,
+        );
     });
 }
 
@@ -1575,7 +1997,7 @@ fn resume_selected_download(
         };
 
         match result {
-            Ok(()) => wake_refresh_loop(),
+            Ok(()) => pulse_refresh_loop(runtime_for_refresh.clone()),
             Err(error) => {
                 set_status(main_weak.clone(), format!("Resume failed: {}", error));
             }
@@ -1653,15 +2075,41 @@ fn redownload_selected(
         let url = task.url.clone();
         let ctx = task.http_context.clone();
         let media_format = task.media_format.clone();
+        let is_media_redownload =
+            task.download_kind == models::DownloadKind::Media && media_format.is_some();
+        let expected_size = if is_media_redownload {
+            std::fs::metadata(&task.save_path)
+                .ok()
+                .map(|metadata| metadata.len())
+                .filter(|size| *size > 0)
+                .or_else(|| (task.total_size > 0).then_some(task.total_size))
+        } else {
+            None
+        };
 
         let _ = manager_for_task.remove_download(&id).await;
-        match manager_for_task
-            .add_download(url, save_dir, Some(filename), media_format, ctx, None)
-            .await
-        {
+        let result = if is_media_redownload {
+            manager_for_task
+                .add_download_with_expected_size(
+                    url,
+                    save_dir,
+                    Some(filename),
+                    media_format,
+                    expected_size,
+                    ctx,
+                    None,
+                )
+                .await
+        } else {
+            manager_for_task
+                .add_download(url, save_dir, Some(filename), media_format, ctx, None)
+                .await
+        };
+
+        match result {
             Ok(task) => {
                 mark_completion_dialog_eligible(&task.id);
-                wake_refresh_loop();
+                pulse_refresh_loop(runtime_for_refresh.clone());
                 select_download(main_weak.clone(), &task.id);
                 show_download_status_window(
                     task_to_detail(&task),
@@ -1826,6 +2274,7 @@ fn start_queued_downloads(
         for id in &queued {
             let _ = manager_for_task.resume_download(id, None).await;
         }
+        pulse_refresh_loop(runtime_for_refresh.clone());
 
         set_status(
             main_weak.clone(),
@@ -2252,24 +2701,7 @@ fn toggle_speed_limiter(
     runtime: Arc<tokio::runtime::Runtime>,
     main_weak: slint::Weak<NativeMain>,
 ) {
-    runtime.spawn(async move {
-        let mut settings = manager.get_settings().await;
-        settings.speed_limit_bps = if settings.speed_limit_bps.is_some() {
-            None
-        } else {
-            Some(1024 * 1024)
-        };
-        let enabled = settings.speed_limit_bps.is_some();
-        manager.update_settings(settings).await;
-        set_status(
-            main_weak,
-            if enabled {
-                "Speed limiter enabled at 1 MB/s."
-            } else {
-                "Speed limiter disabled."
-            },
-        );
-    });
+    open_global_speed_limiter_window(manager, runtime, main_weak);
 }
 
 fn open_url(url: &str) {
@@ -2288,13 +2720,33 @@ fn open_url(url: &str) {
 }
 
 fn open_file_native(path: &str) {
-    if path.trim().is_empty() {
+    let Some(path) = normalize_existing_path(path) else {
+        return;
+    };
+    if !path.exists() {
         return;
     }
 
     #[cfg(target_os = "windows")]
     {
-        let _ = std::process::Command::new("explorer").arg(path).spawn();
+        let file = wide_menu_text(&path.to_string_lossy());
+        let verb = wide_menu_text("open");
+        let directory = path
+            .parent()
+            .map(|parent| wide_menu_text(&parent.to_string_lossy()));
+        unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                verb.as_ptr(),
+                file.as_ptr(),
+                std::ptr::null(),
+                directory
+                    .as_ref()
+                    .map(|value| value.as_ptr())
+                    .unwrap_or(std::ptr::null()),
+                SW_SHOWNORMAL,
+            );
+        }
     }
     #[cfg(target_os = "macos")]
     {
@@ -2307,14 +2759,17 @@ fn open_file_native(path: &str) {
 }
 
 fn open_with_native(path: &str) {
-    if path.trim().is_empty() {
+    let Some(path) = normalize_existing_path(path) else {
+        return;
+    };
+    if !path.exists() {
         return;
     }
 
     #[cfg(target_os = "windows")]
     {
         let operation = wide_menu_text("openas");
-        let file = wide_menu_text(path);
+        let file = wide_menu_text(&path.to_string_lossy());
         unsafe {
             ShellExecuteW(
                 std::ptr::null_mut(),
@@ -2329,12 +2784,12 @@ fn open_with_native(path: &str) {
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("open")
-            .args(["-a", "", path])
+            .args(["-a", "", &path.to_string_lossy()])
             .spawn();
     }
     #[cfg(target_os = "linux")]
     {
-        open_file_native(path);
+        open_file_native(&path.to_string_lossy());
     }
 }
 
@@ -2400,31 +2855,65 @@ fn browser_display_name(browser: &str) -> &'static str {
 }
 
 fn open_folder_native(path: &str) {
-    if path.trim().is_empty() {
+    let Some(folder) = normalize_path_for_folder_action(path) else {
         return;
-    }
+    };
 
     #[cfg(target_os = "windows")]
     {
-        let _ = std::process::Command::new("explorer")
-            .args(["/select,", path])
-            .spawn();
+        let file = wide_menu_text(&folder.to_string_lossy());
+        let verb = wide_menu_text("open");
+        unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                verb.as_ptr(),
+                file.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            );
+        }
     }
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("open")
-            .args(["-R", path])
+            .arg(&folder)
             .spawn();
     }
     #[cfg(target_os = "linux")]
     {
-        let dir = Path::new(path)
-            .parent()
-            .unwrap_or(Path::new(path))
-            .to_string_lossy()
-            .to_string();
-        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+        let _ = std::process::Command::new("xdg-open").arg(&folder).spawn();
     }
+}
+
+fn normalize_existing_path(path: &str) -> Option<PathBuf> {
+    let path = path.trim().trim_matches('"');
+    if path.is_empty() {
+        return None;
+    }
+
+    let candidate = PathBuf::from(path);
+    if candidate.exists() {
+        return fs::canonicalize(&candidate).ok().or(Some(candidate));
+    }
+
+    if candidate.is_absolute() {
+        return Some(candidate);
+    }
+
+    std::env::current_dir().ok().map(|dir| dir.join(candidate))
+}
+
+fn normalize_path_for_folder_action(path: &str) -> Option<PathBuf> {
+    let target = normalize_existing_path(path)?;
+    if target.is_dir() {
+        return Some(target);
+    }
+
+    target
+        .parent()
+        .map(Path::to_path_buf)
+        .or_else(|| Some(target))
 }
 
 fn start_refresh_loop(
@@ -2512,6 +3001,16 @@ fn wake_refresh_loop() {
     if let Some(refresh_notify) = REFRESH_NOTIFY.get() {
         refresh_notify.notify_waiters();
     }
+}
+
+fn pulse_refresh_loop(runtime: Arc<tokio::runtime::Runtime>) {
+    wake_refresh_loop();
+    runtime.spawn(async {
+        for _ in 0..8 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            wake_refresh_loop();
+        }
+    });
 }
 
 fn publish_download_window_updates(details: Vec<DownloadDetailView>) {
@@ -2937,7 +3436,7 @@ fn pause_or_resume_download(
         };
 
         match result {
-            Ok(()) => wake_refresh_loop(),
+            Ok(()) => pulse_refresh_loop(runtime_for_refresh.clone()),
             Err(error) => {
                 set_status(
                     main_weak.clone(),
@@ -2973,7 +3472,7 @@ fn cancel_download_from_window(
     let manager_for_task = manager.clone();
     let runtime_for_refresh = runtime.clone();
     runtime.spawn(async move {
-        let result = manager_for_task.remove_download(&id).await;
+        let result = manager_for_task.pause_download(&id).await;
         if let Err(error) = result {
             set_status(main_weak.clone(), format!("Cancel failed: {}", error));
         } else {
@@ -2986,6 +3485,7 @@ fn cancel_download_from_window(
                     }
                 });
             });
+            set_status(main_weak.clone(), "Download cancelled and kept in history.");
         }
 
         refresh_download_rows(
@@ -3675,7 +4175,7 @@ fn start_download_from_add_window(
                 if auto_start {
                     mark_completion_dialog_eligible(&task.id);
                 }
-                wake_refresh_loop();
+                pulse_refresh_loop(runtime_for_refresh.clone());
                 select_download(main_weak_for_task.clone(), &task.id);
                 set_status(
                     main_weak_for_task.clone(),
@@ -3952,12 +4452,11 @@ fn ffmpeg_install_dir() -> Result<PathBuf, String> {
 }
 
 fn extract_zip_with_powershell(zip_path: &Path, dest: &Path) -> Result<(), String> {
-    let tar_status = Command::new("tar")
-        .arg("-xf")
-        .arg(zip_path)
-        .arg("-C")
-        .arg(dest)
-        .status();
+    let mut tar_command = Command::new("tar");
+    tar_command.arg("-xf").arg(zip_path).arg("-C").arg(dest);
+    #[cfg(target_os = "windows")]
+    tar_command.creation_flags(CREATE_NO_WINDOW);
+    let tar_status = tar_command.status();
     if let Ok(status) = tar_status {
         if status.success() {
             return Ok(());
@@ -3965,18 +4464,22 @@ fn extract_zip_with_powershell(zip_path: &Path, dest: &Path) -> Result<(), Strin
         log::warn!("tar extraction failed with {}", status);
     }
 
-    let status = Command::new("powershell")
+    let mut powershell = Command::new("powershell");
+    powershell
         .arg("-NoProfile")
         .arg("-ExecutionPolicy")
         .arg("Bypass")
+        .arg("-WindowStyle")
+        .arg("Hidden")
         .arg("-Command")
         .arg(format!(
             "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
             zip_path.to_string_lossy().replace('\'', "''"),
             dest.to_string_lossy().replace('\'', "''")
-        ))
-        .status()
-        .map_err(|error| error.to_string())?;
+        ));
+    #[cfg(target_os = "windows")]
+    powershell.creation_flags(CREATE_NO_WINDOW);
+    let status = powershell.status().map_err(|error| error.to_string())?;
     if status.success() {
         Ok(())
     } else {
@@ -4005,7 +4508,7 @@ fn find_file_recursive(root: &Path, file_name: &str) -> Option<PathBuf> {
 }
 
 fn set_add_window_size(window: &NativeAddDownloadWindow, width: u32, height: u32) {
-    window.window().set_size(PhysicalSize::new(width, height));
+    set_window_logical_size(&window.window(), width, height);
 }
 
 fn center_add_window(main_weak: &slint::Weak<NativeMain>, window: &NativeAddDownloadWindow) {
@@ -4595,7 +5098,14 @@ fn parse_batch_urls(urls_text: &str, extension_filter: &str) -> Vec<String> {
 }
 
 fn set_batch_window_size(window: &NativeBatchDownloadWindow, width: u32, height: u32) {
-    window.window().set_size(PhysicalSize::new(width, height));
+    set_window_logical_size(&window.window(), width, height);
+}
+
+fn set_window_logical_size(window: &slint::Window, width: u32, height: u32) {
+    let scale = window.scale_factor().max(1.0);
+    let physical_width = ((width as f32) * scale).round().max(width as f32) as u32;
+    let physical_height = ((height as f32) * scale).round().max(height as f32) as u32;
+    window.set_size(PhysicalSize::new(physical_width, physical_height));
 }
 
 fn pending_update_store() -> Arc<Mutex<Option<PendingUpdate>>> {
@@ -4666,36 +5176,144 @@ fn select_update_platform(manifest: &UpdateManifest) -> Option<&UpdatePlatform> 
         })
 }
 
+fn start_update_check_on_launch(
+    main_weak: slint::Weak<NativeMain>,
+    runtime: Arc<tokio::runtime::Runtime>,
+    can_show_prompt: bool,
+) {
+    runtime.spawn(async move {
+        match check_for_native_update().await {
+            Ok(Some(update)) => {
+                let version = update.version.clone();
+                let notes = update.notes.clone();
+                set_pending_update(Some(update));
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = main_weak.upgrade() {
+                        ui.set_update_prompt_version(version.into());
+                        ui.set_update_prompt_notes(notes.into());
+                        if can_show_prompt {
+                            ui.set_show_update_prompt(true);
+                        }
+                    }
+                });
+            }
+            Ok(None) => {
+                set_pending_update(None);
+            }
+            Err(error) => {
+                log::warn!("Startup update check failed: {}", error);
+            }
+        }
+    });
+}
+
 async fn download_and_launch_update(update: PendingUpdate) -> Result<PathBuf, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|error| error.to_string())?;
-    let bytes = client
+    let response = client
         .get(&update.url)
         .send()
         .await
         .map_err(|error| error.to_string())?
         .error_for_status()
-        .map_err(|error| error.to_string())?
-        .bytes()
-        .await
         .map_err(|error| error.to_string())?;
-    verify_update_sha256(&bytes, &update.sha256)?;
+    let total_size = response.content_length().unwrap_or(0);
     let installer_path = std::env::temp_dir().join(format!(
         "Velocity_Downloader_{}_x64-setup.exe",
         sanitize_version_for_filename(&update.version)
     ));
-    tokio::fs::write(&installer_path, &bytes)
+    let partial_path = installer_path.with_extension("exe.part");
+    let mut file = tokio::fs::File::create(&partial_path)
         .await
         .map_err(|error| error.to_string())?;
-    Command::new(&installer_path)
-        .spawn()
-        .map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut downloaded = 0u64;
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&partial_path).await;
+                return Err(error.to_string());
+            }
+        };
+        file.write_all(&chunk).await.map_err(|error| {
+            let _ = std::fs::remove_file(&partial_path);
+            error.to_string()
+        })?;
+        hasher.update(&chunk);
+        downloaded += chunk.len() as u64;
+        set_update_progress(downloaded, total_size);
+    }
+    file.flush().await.map_err(|error| error.to_string())?;
+    drop(file);
+
+    verify_update_sha256_hex(&format!("{:x}", hasher.finalize()), &update.sha256)?;
+    if tokio::fs::try_exists(&installer_path).await.unwrap_or(false) {
+        let _ = tokio::fs::remove_file(&installer_path).await;
+    }
+    tokio::fs::rename(&partial_path, &installer_path)
+        .await
+        .map_err(|error| {
+            let _ = std::fs::remove_file(&partial_path);
+            error.to_string()
+        })?;
+    set_update_progress(total_size, total_size);
+    set_update_state("Installing update...", &update.version, &update.notes, true, true);
+    schedule_silent_update_install(&installer_path)?;
     Ok(installer_path)
 }
 
-fn verify_update_sha256(bytes: &[u8], expected: &str) -> Result<(), String> {
+fn schedule_silent_update_install(installer_path: &Path) -> Result<(), String> {
+    let current_exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let pid = std::process::id();
+
+    #[cfg(target_os = "windows")]
+    {
+        let script = format!(
+            "$ErrorActionPreference='SilentlyContinue'; \
+             Wait-Process -Id {pid}; \
+             $installer={installer}; \
+             $app={app}; \
+             Start-Process -FilePath $installer -ArgumentList '/S' -Wait; \
+             Remove-Item -LiteralPath $installer -Force; \
+             Start-Process -FilePath $app",
+            pid = pid,
+            installer = powershell_single_quoted(installer_path),
+            app = powershell_single_quoted(&current_exe),
+        );
+        let mut command = Command::new("powershell");
+        command
+            .arg("-NoProfile")
+            .arg("-ExecutionPolicy")
+            .arg("Bypass")
+            .arg("-WindowStyle")
+            .arg("Hidden")
+            .arg("-Command")
+            .arg(script)
+            .creation_flags(CREATE_NO_WINDOW);
+        command.spawn().map_err(|error| error.to_string())?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new(installer_path)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_single_quoted(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "''"))
+}
+
+fn verify_update_sha256_hex(actual: &str, expected: &str) -> Result<(), String> {
     let expected = expected
         .trim()
         .trim_start_matches("sha256:")
@@ -4705,10 +5323,7 @@ fn verify_update_sha256(bytes: &[u8], expected: &str) -> Result<(), String> {
         return Err("Update manifest contains an invalid sha256 value.".to_string());
     }
 
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let actual = format!("{:x}", hasher.finalize());
-    if actual == expected {
+    if actual.eq_ignore_ascii_case(&expected) {
         Ok(())
     } else {
         Err(
@@ -4729,6 +5344,25 @@ fn sanitize_version_for_filename(version: &str) -> String {
             }
         })
         .collect()
+}
+
+fn cleanup_downloaded_update_installers() {
+    let temp_dir = std::env::temp_dir();
+    let Ok(entries) = fs::read_dir(temp_dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with("Velocity_Downloader_")
+            && (name.ends_with("_x64-setup.exe") || name.ends_with("_x64-setup.exe.part"))
+        {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 fn compare_versions(left: &str, right: &str) -> i32 {
@@ -4963,13 +5597,16 @@ fn show_settings_window(
                             match download_and_launch_update(update).await {
                                 Ok(path) => {
                                     set_update_state(
-                                        "Installer started. Close Velocity to finish updating.",
+                                        "Installing update. Velocity will restart automatically.",
                                         "",
                                         path.display().to_string(),
                                         false,
                                         false,
                                     );
-                                    set_status(main_weak, "Update installer started.");
+                                    set_status(main_weak, "Installing update...");
+                                    let _ = slint::invoke_from_event_loop(|| {
+                                        let _ = slint::quit_event_loop();
+                                    });
                                 }
                                 Err(error) => {
                                     set_update_state(
@@ -5186,7 +5823,37 @@ fn set_update_state(
                 window.set_update_notes(notes.clone().into());
                 window.set_update_available(available);
                 window.set_update_working(working);
+                if !working {
+                    window.set_update_progress(0.0);
+                    window.set_update_progress_text("".into());
+                }
                 window.set_active_tab("Updates".into());
+            }
+        });
+    });
+}
+
+fn set_update_progress(downloaded: u64, total: u64) {
+    let progress = if total > 0 {
+        ((downloaded as f64 / total as f64) * 100.0).clamp(0.0, 100.0) as f32
+    } else {
+        0.0
+    };
+    let text = if total > 0 {
+        format!(
+            "Downloading update... {} / {} ({:.0}%)",
+            format_bytes(downloaded),
+            format_bytes(total),
+            progress
+        )
+    } else {
+        format!("Downloading update... {}", format_bytes(downloaded))
+    };
+    let _ = slint::invoke_from_event_loop(move || {
+        SETTINGS_WINDOW.with(|settings_window| {
+            if let Some(window) = settings_window.borrow().as_ref() {
+                window.set_update_progress(progress);
+                window.set_update_progress_text(text.clone().into());
             }
         });
     });
@@ -5227,7 +5894,7 @@ fn set_windows_startup_enabled(enabled: bool) -> Result<(), String> {
     let value_name = "Velocity Download Manager";
     if enabled {
         let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-        let command = format!("\"{}\"", exe.display());
+        let command = format!("\"{}\" --startup", exe.display());
         run_key
             .set_value(value_name, &command)
             .map_err(|error| error.to_string())?;
