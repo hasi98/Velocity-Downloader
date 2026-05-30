@@ -2,10 +2,41 @@
     let currentMedia = null;
     let panel = null;
     let hideTimer = null;
+    let siteDisabled = false;
     const dismissedMedia = new WeakSet();
 
+    function normalizeDomain(domain) {
+        return (domain || "").toLowerCase().replace(/^www\./, "");
+    }
+
+    function currentHost() {
+        try {
+            return normalizeDomain(window.location.hostname);
+        } catch {
+            return "";
+        }
+    }
+
+    function isHostDisabled(list) {
+        const host = currentHost();
+        if (!host) return false;
+        return (list || []).map(normalizeDomain).some((disabled) => {
+            return host === disabled || host.endsWith(`.${disabled}`);
+        });
+    }
+
+    function refreshDisabledState(callback) {
+        chrome.storage.local.get(["excludedSites"], (result) => {
+            siteDisabled = isHostDisabled(result.excludedSites || []);
+            if (siteDisabled) {
+                hidePanel();
+            }
+            if (callback) callback();
+        });
+    }
+
     function createPanel() {
-        if (panel) return;
+        if (panel || siteDisabled) return;
 
         panel = document.createElement("div");
         panel.className = "vdm-download-panel";
@@ -43,7 +74,7 @@
         event.preventDefault();
         event.stopPropagation();
 
-        if (!currentMedia) return;
+        if (!currentMedia || siteDisabled) return;
 
         const pageUrl = window.location.href;
         const mediaUrl = getMediaSource(currentMedia);
@@ -134,6 +165,7 @@
     }
 
     function showPanel(mediaElement) {
+        if (siteDisabled) return;
         if (dismissedMedia.has(mediaElement)) return;
 
         const rect = mediaElement.getBoundingClientRect();
@@ -173,11 +205,24 @@
     }
 
     function scan() {
+        if (siteDisabled) return;
         document.querySelectorAll("video, audio").forEach(attachMedia);
     }
 
-    createPanel();
-    scan();
+    refreshDisabledState(() => {
+        createPanel();
+        scan();
+    });
+
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+        if (areaName !== "local" || !changes.excludedSites) return;
+        refreshDisabledState(() => {
+            if (!siteDisabled) {
+                createPanel();
+                scan();
+            }
+        });
+    });
 
     const observer = new MutationObserver(scan);
     observer.observe(document.documentElement, { childList: true, subtree: true });

@@ -19,11 +19,11 @@
 !macro NSIS_HOOK_POSTINSTALL
   ; Register extension in Google Chrome
   WriteRegStr HKCU "Software\Google\Chrome\Extensions\npnahejfadhjkhgnhciecngenjmkcbkk" "path" "$INSTDIR\resources\extension"
-  WriteRegStr HKCU "Software\Google\Chrome\Extensions\npnahejfadhjkhgnhciecngenjmkcbkk" "version" "2.0.3"
+  WriteRegStr HKCU "Software\Google\Chrome\Extensions\npnahejfadhjkhgnhciecngenjmkcbkk" "version" "2.0.5"
 
   ; Register extension in Microsoft Edge
   WriteRegStr HKCU "Software\Microsoft\Edge\Extensions\npnahejfadhjkhgnhciecngenjmkcbkk" "path" "$INSTDIR\resources\extension"
-  WriteRegStr HKCU "Software\Microsoft\Edge\Extensions\npnahejfadhjkhgnhciecngenjmkcbkk" "version" "2.0.3"
+  WriteRegStr HKCU "Software\Microsoft\Edge\Extensions\npnahejfadhjkhgnhciecngenjmkcbkk" "version" "2.0.5"
 !macroend
 
 !macro NSIS_HOOK_UNINSTALL

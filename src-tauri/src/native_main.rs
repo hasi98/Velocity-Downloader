@@ -290,6 +290,10 @@ fn main() -> Result<(), slint::PlatformError> {
     let scheduler_config = Arc::new(Mutex::new(SchedulerConfig::default()));
     let _ = SCHEDULER_CONFIG.set(scheduler_config.clone());
     let weak = ui.as_weak();
+    let initial_settings = crate::state::StateManager::load_settings();
+    COMPLETION_DIALOGS_DISABLED.with(|disabled| {
+        *disabled.borrow_mut() = !initial_settings.show_download_complete_dialog;
+    });
     media::log_ffmpeg_availability(None);
     cleanup_downloaded_update_installers();
     sync_startup_setting_on_launch(manager.clone(), runtime.clone());
@@ -3118,6 +3122,11 @@ fn show_download_complete_window(detail: DownloadDetailView) {
                         COMPLETION_DIALOGS_DISABLED.with(|disabled| {
                             *disabled.borrow_mut() = true;
                         });
+                        let mut settings = crate::state::StateManager::load_settings();
+                        settings.show_download_complete_dialog = false;
+                        if let Err(error) = crate::state::StateManager::save_settings(&settings) {
+                            log::warn!("Could not save completion dialog preference: {}", error);
+                        }
                     }
                     hide_download_complete_window(&id);
                 }
@@ -3687,6 +3696,50 @@ async fn handle_extension_add_download(
         referer: payload.referer,
         user_agent: payload.user_agent,
     };
+
+    let settings = state.manager.get_settings().await;
+    let should_open_dialog =
+        settings.show_add_dialog_for_extension_downloads || media::is_likely_media_page_url(&url);
+    if !should_open_dialog {
+        let manager = state.manager.clone();
+        let runtime = state.runtime.clone();
+        let main_weak = state.main_weak.clone();
+        let selected_category = state.selected_category.clone();
+        let search_query = state.search_query.clone();
+        let sort_mode = state.sort_mode.clone();
+        match manager
+            .add_download(url.clone(), None, None, None, context, None)
+            .await
+        {
+            Ok(task) => {
+                mark_completion_dialog_eligible(&task.id);
+                pulse_refresh_loop(runtime.clone());
+                set_status(
+                    main_weak.clone(),
+                    format!("Started {} from browser.", task.filename),
+                );
+                refresh_download_rows(
+                    main_weak,
+                    manager,
+                    runtime,
+                    selected_category,
+                    search_query,
+                    sort_mode,
+                );
+                return Json(ExtensionDownloadResponse {
+                    success: true,
+                    message: "Download started in Velocity Download Manager".to_string(),
+                });
+            }
+            Err(error) => {
+                set_status(state.main_weak, "Browser download could not be started.");
+                return Json(ExtensionDownloadResponse {
+                    success: false,
+                    message: error,
+                });
+            }
+        }
+    }
 
     open_add_download_window_with_initial(
         state.manager,
@@ -5494,13 +5547,21 @@ fn show_settings_window(
                     let manager = manager.clone();
                     let runtime = runtime.clone();
                     let main_weak = main_weak.clone();
-                    move |default_dir, temp_dir, segments, speed_limit, start_on_boot| {
+                    move |default_dir,
+                          temp_dir,
+                          segments,
+                          speed_limit,
+                          start_on_boot,
+                          show_extension_add_dialog,
+                          show_download_complete_dialog| {
                         match settings_from_inputs(
                             default_dir.as_str(),
                             temp_dir.as_str(),
                             segments.as_str(),
                             speed_limit.as_str(),
                             start_on_boot,
+                            show_extension_add_dialog,
+                            show_download_complete_dialog,
                             crate::state::StateManager::load_settings().extension_prompt_seen,
                         ) {
                             Ok(settings) => {
@@ -5518,6 +5579,13 @@ fn show_settings_window(
                                         set_status(main_weak.clone(), "Startup setting failed.");
                                         return;
                                     }
+                                    let completion_disabled =
+                                        !settings.show_download_complete_dialog;
+                                    let _ = slint::invoke_from_event_loop(move || {
+                                        COMPLETION_DIALOGS_DISABLED.with(|disabled| {
+                                            *disabled.borrow_mut() = completion_disabled;
+                                        });
+                                    });
                                     manager.update_settings(settings).await;
                                     set_settings_message("Settings saved.");
                                     set_status(main_weak, "Settings saved.");
@@ -5791,6 +5859,10 @@ fn apply_settings(window: &NativeSettingsWindow, settings: &AppSettings) {
             .into(),
     );
     window.set_start_on_boot(settings.start_on_boot);
+    window.set_show_extension_add_dialog(settings.show_add_dialog_for_extension_downloads);
+    let completion_dialog_enabled =
+        COMPLETION_DIALOGS_DISABLED.with(|disabled| !*disabled.borrow());
+    window.set_show_download_complete_dialog(completion_dialog_enabled);
     window.set_settings_message(SharedString::default());
 }
 
@@ -5915,6 +5987,8 @@ fn settings_from_inputs(
     segments: &str,
     speed_limit: &str,
     start_on_boot: bool,
+    show_add_dialog_for_extension_downloads: bool,
+    show_download_complete_dialog: bool,
     extension_prompt_seen: bool,
 ) -> Result<AppSettings, String> {
     let default_dir = default_dir.trim();
@@ -5951,6 +6025,8 @@ fn settings_from_inputs(
         speed_limit_bps,
         start_on_boot,
         extension_prompt_seen,
+        show_add_dialog_for_extension_downloads,
+        show_download_complete_dialog,
     })
 }
 

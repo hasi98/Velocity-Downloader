@@ -1169,6 +1169,8 @@ export component NativeSettingsWindow inherits Window {
     in-out property <string> segments-text;
     in-out property <string> speed-limit-text;
     in-out property <bool> start-on-boot;
+    in-out property <bool> show-extension-add-dialog;
+    in-out property <bool> show-download-complete-dialog;
     in-out property <string> settings-message;
     in-out property <string> update-status: "Up to date";
     in-out property <string> update-version;
@@ -1177,7 +1179,7 @@ export component NativeSettingsWindow inherits Window {
     in-out property <bool> update-working;
     in-out property <float> update-progress;
     in-out property <string> update-progress-text;
-    callback save-settings(string, string, string, string, bool);
+    callback save-settings(string, string, string, string, bool, bool, bool);
     callback close-settings();
     callback titlebar-drag-requested();
     callback check-updates();
@@ -1256,13 +1258,15 @@ export component NativeSettingsWindow inherits Window {
 
             if root.active-tab == "Downloads": VerticalLayout {
                 padding: 12px;
-                spacing: 6px;
+                spacing: 5px;
 
                 Text { text: "Connections per download"; color: #ffffff; font-size: 13px; height: 18px; }
                 SettingsInput { text <=> root.segments-text; placeholder: ""; }
                 Text { text: "Global speed limit, KB/s"; color: #ffffff; font-size: 13px; height: 18px; }
                 SettingsInput { text <=> root.speed-limit-text; placeholder: "0 for unlimited"; }
                 ToggleButton { label: "Start Velocity when Windows starts"; checked <=> root.start-on-boot; width: 320px; }
+                ToggleButton { label: "Show Add Download window for browser downloads"; checked <=> root.show-extension-add-dialog; width: 390px; }
+                ToggleButton { label: "Show download complete dialog"; checked <=> root.show-download-complete-dialog; width: 320px; }
             }
 
             if root.active-tab == "Storage": VerticalLayout {
@@ -1344,6 +1348,18 @@ export component NativeSettingsWindow inherits Window {
             }
         }
 
+        Text {
+            x: 16px;
+            y: parent.height - 43px;
+            width: parent.width - 246px;
+            height: 22px;
+            text: root.settings-message;
+            color: root.settings-message == "Settings saved." ? #36c275 : #b8c4cc;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
         HorizontalLayout {
             x: parent.width - 214px;
             y: parent.height - 50px;
@@ -1351,7 +1367,7 @@ export component NativeSettingsWindow inherits Window {
             height: 32px;
             spacing: 12px;
             SettingsButton { label: "Cancel"; primary: false; width: 93px; clicked => { root.close-settings(); } }
-            SettingsButton { label: "Save"; primary: true; width: 93px; clicked => { root.save-settings(root.default-dir, root.temp-dir, root.segments-text, root.speed-limit-text, root.start-on-boot); } }
+            SettingsButton { label: "Save"; primary: true; width: 93px; clicked => { root.save-settings(root.default-dir, root.temp-dir, root.segments-text, root.speed-limit-text, root.start-on-boot, root.show-extension-add-dialog, root.show-download-complete-dialog); } }
         }
     }
 }

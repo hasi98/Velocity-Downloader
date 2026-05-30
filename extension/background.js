@@ -3,12 +3,27 @@ let isConnected = false;
 let excludedSites = [];
 const browserFallbackUrls = new Set();
 
+function normalizeExcludedHost(hostname) {
+    return (hostname || "").toLowerCase().replace(/^www\./, "");
+}
+
 // Load excluded sites from storage
 chrome.storage.local.get(["excludedSites"], (result) => {
     if (result.excludedSites) {
-        excludedSites = result.excludedSites;
+        excludedSites = result.excludedSites.map(normalizeExcludedHost);
     }
 });
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local" || !changes.excludedSites) return;
+    excludedSites = (changes.excludedSites.newValue || []).map(normalizeExcludedHost);
+});
+
+async function refreshExcludedSites() {
+    const result = await chrome.storage.local.get(["excludedSites"]);
+    excludedSites = (result.excludedSites || []).map(normalizeExcludedHost);
+    return excludedSites;
+}
 
 // Check connection to the desktop app
 async function checkConnection() {
@@ -72,6 +87,10 @@ function isLikelyMediaPageUrl(url) {
 }
 
 async function sendUrlToVelocity(url, referer = "") {
+    if (isUrlExcluded(url) || isUrlExcluded(referer)) {
+        throw new Error("VDM is disabled on this site");
+    }
+
     await checkConnection();
     if (!isConnected) {
         throw new Error("Velocity Download Manager is not running");
@@ -138,6 +157,48 @@ function restoreBrowserDownload(url) {
 
 function normalizeHost(hostname) {
     return hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
+}
+
+function hostFromUrl(url) {
+    try {
+        const parsed = new URL(url);
+        if (!["http:", "https:"].includes(parsed.protocol)) return "";
+        return normalizeExcludedHost(parsed.hostname);
+    } catch {
+        return "";
+    }
+}
+
+function isHostExcluded(hostname) {
+    const host = normalizeExcludedHost(hostname);
+    if (!host) return false;
+    return excludedSites.some((excluded) => {
+        const normalized = normalizeExcludedHost(excluded);
+        return host === normalized || host.endsWith(`.${normalized}`);
+    });
+}
+
+function isUrlExcluded(url) {
+    return isHostExcluded(hostFromUrl(url));
+}
+
+async function getActivePageUrl() {
+    try {
+        const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        return tabs && tabs[0] && tabs[0].url ? tabs[0].url : "";
+    } catch {
+        return "";
+    }
+}
+
+async function isDownloadFromDisabledSite(targetUrl, referer) {
+    await refreshExcludedSites();
+    if (isUrlExcluded(targetUrl) || isUrlExcluded(referer)) {
+        return true;
+    }
+
+    const activePageUrl = await getActivePageUrl();
+    return isUrlExcluded(activePageUrl);
 }
 
 function isPrivateIpv4(hostname) {
@@ -212,8 +273,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         .catch(err => console.error("Context menu send failed:", err));
 });
 
-// Intercept downloads
-chrome.downloads.onCreated.addListener((downloadItem) => {
+async function handleDownloadCreated(downloadItem) {
     const targetUrl = downloadItem.finalUrl || downloadItem.url;
 
     if (!targetUrl || browserFallbackUrls.has(targetUrl)) {
@@ -249,12 +309,12 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
         return;
     }
 
-    if (excludedSites.includes(domain)) {
-        console.log(`Site ${domain} is in exclusion list. Using browser download.`);
+    const referer = downloadItem.referrer || "";
+    if (await isDownloadFromDisabledSite(targetUrl, referer)) {
+        console.log(`VDM is disabled for this site. Using browser download: ${targetUrl}`);
         return;
     }
 
-    const referer = downloadItem.referrer || "";
     cancelBrowserDownload(downloadItem.id);
     console.log("Canceled browser download and sending to Velocity Download Manager:", targetUrl);
 
@@ -266,6 +326,13 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
             console.error("Failed to send download to Velocity Download Manager", e);
             restoreBrowserDownload(targetUrl);
         });
+}
+
+// Intercept downloads
+chrome.downloads.onCreated.addListener((downloadItem) => {
+    handleDownloadCreated(downloadItem).catch((error) => {
+        console.error("VDM download interception failed:", error);
+    });
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -278,7 +345,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.action === "toggleExclusion") {
-        const domain = message.domain;
+        const domain = normalizeExcludedHost(message.domain);
         const index = excludedSites.indexOf(domain);
 
         if (index > -1) {

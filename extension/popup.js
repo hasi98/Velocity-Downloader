@@ -5,11 +5,16 @@ const siteLabel = document.getElementById("currentSite");
 
 let currentDomain = "";
 
+function normalizeDomain(domain) {
+    return (domain || "").toLowerCase().replace(/^www\./, "");
+}
+
 function updateExclusionButton(excludedSites) {
     if (!currentDomain) return;
 
     const apply = (list) => {
-        const isExcluded = list.includes(currentDomain);
+        const normalizedList = (list || []).map(normalizeDomain);
+        const isExcluded = normalizedList.includes(currentDomain);
         excludeBtn.textContent = isExcluded ? "Enable VDM on this site" : "Disable VDM on this site";
         excludeBtn.style.background = isExcluded ? "#0d6b42" : "#26282b";
         excludeBtn.style.display = "block";
@@ -31,7 +36,7 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     try {
         const url = new URL(tabs[0].url);
         if (url.protocol.startsWith("http")) {
-            currentDomain = url.hostname;
+            currentDomain = normalizeDomain(url.hostname);
             siteLabel.textContent = currentDomain;
             updateExclusionButton();
         } else {

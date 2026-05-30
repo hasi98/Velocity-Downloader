@@ -233,6 +233,10 @@ pub struct AppSettings {
     pub start_on_boot: bool,
     #[serde(default)]
     pub extension_prompt_seen: bool,
+    #[serde(default = "default_true")]
+    pub show_add_dialog_for_extension_downloads: bool,
+    #[serde(default = "default_true")]
+    pub show_download_complete_dialog: bool,
 }
 
 fn default_segments() -> usize {
@@ -246,6 +250,10 @@ fn default_download_dir() -> String {
         .to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -255,6 +263,8 @@ impl Default for AppSettings {
             speed_limit_bps: None,
             start_on_boot: false,
             extension_prompt_seen: false,
+            show_add_dialog_for_extension_downloads: true,
+            show_download_complete_dialog: true,
         }
     }
 }
